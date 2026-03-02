@@ -1,0 +1,98 @@
+{
+  "projectType": "saas",
+  "projectName": "Sift",
+  "projectDescription": "Disaster alert relay with AI-powered discovery, real-time push, and BLE mesh for offline sharing",
+  "theme": "aspen",
+  "primaryColor": "#DC2626",
+  "lightColor": "#EF4444",
+  "darkColor": "#991B1B",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/ai-agent",
+              "features/real-time-alerts",
+              "features/ble-mesh",
+              "features/map-view"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/tech-stack",
+              "architecture/data-flow"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Deployment",
+        "groups": [
+          {
+            "group": "Setup",
+            "pages": [
+              "deployment/server-setup",
+              "deployment/client-setup",
+              "deployment/configuration"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "deployment/remote-deployment",
+              "deployment/environment-variables"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "REST API",
+            "pages": [
+              "api/overview",
+              "api/endpoints",
+              "api/websocket"
+            ]
+          },
+          {
+            "group": "Data Sources",
+            "pages": [
+              "api/data-sources",
+              "api/disaster-agent"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "AI-powered disaster agent that aggregates alerts from USGS, NOAA, NASA EONET, and GDACS",
+    "Real-time WebSocket push notifications to connected clients",
+    "BLE mesh networking for offline alert sharing between nearby devices",
+    "Interactive map view with alerts plotted by location and severity",
+    "In-app chat over Bluetooth for low-connectivity scenarios"
+  ],
+  "publicApiSurface": [
+    "GET /health",
+    "POST /api/register",
+    "GET /api/alerts",
+    "POST /api/alerts/demo",
+    "WS /ws",
+    "GET /alerts/agent/status",
+    "POST /alerts/agent/run"
+  ]
+}
