@@ -36,7 +36,8 @@
               "features/ai-agent",
               "features/real-time-alerts",
               "features/ble-mesh",
-              "features/map-view"
+              "features/map-view",
+              "features/chat"
             ]
           },
           {
