@@ -1,0 +1,391 @@
+---
+title: Remote Deployment
+description: Deploy Sift to a remote server with proper firewall and port configuration
+---
+
+# Remote Deployment
+
+This guide walks you through deploying Sift to a remote server (such as a cloud VPS, droplet, or EC2 instance) and configuring it for client connections.
+
+## Prerequisites
+
+- A remote Linux server (Ubuntu, Debian, CentOS, etc.)
+- SSH access to the server
+- Python 3.8+ installed on the server
+- `sudo` privileges for firewall configuration
+
+## Server Setup
+
+### 1. Clone the Repository
+
+SSH into your remote server and clone the Sift repository:
+
+```bash
+ssh user@your-server-ip
+git clone <repository-url>
+cd Sift/server
+```
+
+### 2. Create Virtual Environment
+
+<Warning>
+Many modern Linux distributions (Ubuntu 22.04+, Debian 12+) enforce externally-managed Python environments. Always use a virtual environment to avoid installation errors.
+</Warning>
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+If `venv` creation fails:
+
+```bash
+sudo apt install -y python3-venv
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 3. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Configure Environment Variables
+
+Create a `.env` file in the `server/` directory with your configuration:
+
+```bash
+PORT=8001
+H4H_API_KEY=your-h4h-api-key
+H4H_BASE_URL=http://165.245.139.104:443/v1
+TAVILY_API_KEY=your-tavily-api-key
+AGENT_INTERVAL_MINUTES=20
+```
+
+See [Environment Variables](/deployment/environment-variables) for detailed configuration options.
+
+## Port Configuration
+
+### Choose Your Port
+
+By default, Sift runs on port `8000`. For remote deployments, you may want to use a different port:
+
+- **8000**: Default development port
+- **8001**: Common alternative for production
+- **8080**: HTTP alternative port
+- **443**: HTTPS (requires SSL certificate setup)
+
+<Note>
+Make sure your chosen port doesn't conflict with other services running on your server. Check with `sudo netstat -tulpn | grep :<port>`.
+</Note>
+
+### Start the Server
+
+Run the server with your chosen port:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8001
+```
+
+<Warning>
+The `--host 0.0.0.0` flag is required for remote deployments to allow connections from external IP addresses. Without it, the server will only accept localhost connections.
+</Warning>
+
+For production with auto-reload disabled:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8001 --workers 4
+```
+
+## Firewall Configuration
+
+### UFW (Ubuntu/Debian)
+
+If your server uses UFW (Uncomplicated Firewall), open the port:
+
+```bash
+sudo ufw allow 8001/tcp
+sudo ufw reload
+```
+
+Verify the rule:
+
+```bash
+sudo ufw status
+```
+
+You should see:
+
+```
+Status: active
+
+To                         Action      From
+--                         ------      ----
+8001/tcp                   ALLOW       Anywhere
+8001/tcp (v6)              ALLOW       Anywhere (v6)
+```
+
+### firewalld (CentOS/RHEL/Fedora)
+
+For systems using `firewalld`:
+
+```bash
+sudo firewall-cmd --permanent --add-port=8001/tcp
+sudo firewall-cmd --reload
+```
+
+Verify:
+
+```bash
+sudo firewall-cmd --list-ports
+```
+
+### iptables (Manual)
+
+If using `iptables` directly:
+
+```bash
+sudo iptables -A INPUT -p tcp --dport 8001 -j ACCEPT
+sudo iptables-save | sudo tee /etc/iptables/rules.v4
+```
+
+## Cloud Provider Firewall
+
+<Warning>
+OS-level firewall rules are NOT enough for cloud deployments. You must also configure your cloud provider's security group or firewall.
+</Warning>
+
+### DigitalOcean Droplets
+
+1. Navigate to **Networking** → **Firewalls** in the DigitalOcean control panel
+2. Create a new firewall or edit an existing one
+3. Add an **Inbound Rule**:
+   - **Type**: Custom
+   - **Protocol**: TCP
+   - **Port Range**: 8001
+   - **Sources**: All IPv4, All IPv6 (or restrict to specific IPs)
+4. Apply the firewall to your droplet
+
+### AWS EC2 Security Groups
+
+1. Navigate to **EC2** → **Security Groups**
+2. Select your instance's security group
+3. Click **Edit inbound rules** → **Add rule**:
+   - **Type**: Custom TCP
+   - **Port range**: 8001
+   - **Source**: 0.0.0.0/0 (or restrict to specific CIDR blocks)
+4. Save the rule
+
+### Google Cloud Platform (GCP)
+
+1. Navigate to **VPC Network** → **Firewall**
+2. Click **Create Firewall Rule**:
+   - **Name**: allow-sift-8001
+   - **Targets**: All instances in the network
+   - **Source IP ranges**: 0.0.0.0/0
+   - **Protocols and ports**: TCP: 8001
+3. Create the rule
+
+### Azure
+
+1. Navigate to **Virtual machines** → Select your VM → **Networking**
+2. Click **Add inbound port rule**:
+   - **Service**: Custom
+   - **Port ranges**: 8001
+   - **Protocol**: TCP
+   - **Action**: Allow
+3. Add the rule
+
+## Client Configuration
+
+Update the client app to connect to your remote server.
+
+Edit `Client/src/config/constants.js`:
+
+```javascript
+export const APP_CONFIG = {
+  CENTRAL_SERVER_URL: 'http://165.245.139.104:8001',  // Your server IP and port
+  // ... other config
+};
+```
+
+<Note>
+Replace `165.245.139.104` with your server's public IP address and `8001` with your chosen port.
+</Note>
+
+## Process Management
+
+### Using systemd (Recommended)
+
+Create a systemd service for automatic startup and process management.
+
+Create `/etc/systemd/system/sift.service`:
+
+```ini
+[Unit]
+Description=Sift Disaster Alert Server
+After=network.target
+
+[Service]
+Type=simple
+User=sift
+WorkingDirectory=/home/sift/Sift/server
+Environment="PATH=/home/sift/Sift/server/venv/bin"
+ExecStart=/home/sift/Sift/server/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8001 --workers 4
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable sift
+sudo systemctl start sift
+```
+
+Check status:
+
+```bash
+sudo systemctl status sift
+```
+
+View logs:
+
+```bash
+sudo journalctl -u sift -f
+```
+
+### Using screen (Quick Alternative)
+
+For quick deployments without systemd:
+
+```bash
+screen -S sift
+cd ~/Sift/server
+source venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8001
+```
+
+Detach from screen: `Ctrl+A`, then `D`
+
+Reattach later:
+
+```bash
+screen -r sift
+```
+
+## Security Best Practices
+
+### 1. Use HTTPS in Production
+
+<Warning>
+Never transmit sensitive data over plain HTTP in production. Set up SSL/TLS certificates using Let's Encrypt.
+</Warning>
+
+Install certbot:
+
+```bash
+sudo apt install certbot
+```
+
+Obtain a certificate (requires a domain name):
+
+```bash
+sudo certbot certonly --standalone -d yourdomain.com
+```
+
+Run uvicorn with SSL:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 443 \
+  --ssl-keyfile /etc/letsencrypt/live/yourdomain.com/privkey.pem \
+  --ssl-certfile /etc/letsencrypt/live/yourdomain.com/fullchain.pem
+```
+
+### 2. Restrict Firewall Access
+
+Instead of allowing all IPs (`0.0.0.0/0`), restrict to known client IP ranges:
+
+```bash
+sudo ufw delete allow 8001/tcp
+sudo ufw allow from 203.0.113.0/24 to any port 8001
+```
+
+### 3. Environment Variables Security
+
+Never commit `.env` files to version control:
+
+```bash
+echo ".env" >> .gitignore
+```
+
+Set restrictive permissions:
+
+```bash
+chmod 600 .env
+```
+
+### 4. Keep System Updated
+
+```bash
+sudo apt update && sudo apt upgrade -y
+```
+
+### 5. Monitor Logs
+
+Regularly check server logs for suspicious activity:
+
+```bash
+sudo journalctl -u sift -f --since "1 hour ago"
+```
+
+## Troubleshooting
+
+### Connection Refused
+
+1. **Verify server is running**:
+   ```bash
+   sudo netstat -tulpn | grep 8001
+   ```
+
+2. **Check OS firewall**:
+   ```bash
+   sudo ufw status
+   ```
+
+3. **Verify cloud firewall** in your provider's console
+
+4. **Test locally first**:
+   ```bash
+   curl http://localhost:8001/health
+   ```
+
+5. **Test from remote**:
+   ```bash
+   curl http://your-server-ip:8001/health
+   ```
+
+### Port Already in Use
+
+```bash
+sudo lsof -i :8001
+sudo kill <PID>
+```
+
+Or choose a different port.
+
+### Permission Denied on Port 443
+
+Ports below 1024 require root privileges. Use `sudo` or a reverse proxy like nginx.
+
+## Next Steps
+
+- [Environment Variables](/deployment/environment-variables) - Configure API keys and agent settings
+- Set up monitoring with tools like Prometheus or DataDog
+- Configure a reverse proxy (nginx, Caddy) for production
+- Set up automated backups for `server/data/`

@@ -1,0 +1,342 @@
+---
+title: 'Real-time Alert Delivery'
+description: 'WebSocket-based alert broadcasting system for instant disaster notifications'
+icon: 'bolt'
+---
+
+## Overview
+
+Sift delivers disaster alerts in real-time using WebSocket connections. When the AI agent discovers a new disaster event or a device shares an alert via BLE mesh, all connected clients receive the alert instantly.
+
+## WebSocket Connection
+
+### Endpoint
+
+```
+ws://your-server/ws?deviceId=<device-id>
+```
+
+**Query Parameters**:
+- `deviceId` (optional): Unique identifier for the device. Ensures only one WebSocket connection per device.
+
+### Connection Flow
+
+<Steps>
+  <Step title="Client Connects">
+    Client establishes WebSocket connection with optional device ID.
+  </Step>
+  <Step title="Server Accepts">
+    Server accepts connection and tracks device ID.
+  </Step>
+  <Step title="One Connection Per Device">
+    If a device connects with the same ID, the previous connection is closed.
+  </Step>
+  <Step title="Registration">
+    Device is marked as "connected" in the user database.
+  </Step>
+</Steps>
+
+### Implementation
+
+```python
+class ConnectionManager:
+    def __init__(self):
+        self._connections: list[WebSocket] = []
+        self._device_by_ws: dict = {}
+
+    async def connect(self, ws: WebSocket, device_id: str = ""):
+        # One connection per device: close any existing connections
+        if device_id:
+            for old_ws in list(self._connections):
+                if self._device_by_ws.get(id(old_ws)) == device_id:
+                    try:
+                        await old_ws.close()
+                    except Exception:
+                        pass
+        await ws.accept()
+        self._connections.append(ws)
+        if device_id:
+            self._device_by_ws[id(ws)] = device_id
+        logger.info(f"[ws] Connected. Total: {len(self._connections)}")
+```
+
+**Key file**: `server/app/main.py:24-48`
+
+## Message Format
+
+All WebSocket messages are JSON objects with an `event` field:
+
+### New Alert Event
+
+Broadcast when the AI agent saves a new disaster alert:
+
+```json
+{
+  "event": "alert:new",
+  "alert": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "type": "earthquake",
+    "severity": "high",
+    "title": "M6.2 Earthquake near Tokyo, Japan",
+    "lat": 35.6762,
+    "lng": 139.6503,
+    "city": "Tokyo",
+    "state": "Kanto Region",
+    "source": "USGS"
+  }
+}
+```
+
+**Fields**:
+
+<ParamField path="event" type="string" required>
+  Event type identifier. For new alerts, always `"alert:new"`.
+</ParamField>
+
+<ParamField path="alert.id" type="string" required>
+  Unique UUID for this alert.
+</ParamField>
+
+<ParamField path="alert.type" type="string" required>
+  Disaster type: `earthquake`, `flood`, `fire`, `storm`, `chemical`, `tsunami`, `medical`, `infrastructure`, or `other`.
+</ParamField>
+
+<ParamField path="alert.severity" type="string" required>
+  Severity level: `low`, `medium`, `high`, or `critical`.
+</ParamField>
+
+<ParamField path="alert.title" type="string" required>
+  Human-readable alert title (max 200 characters).
+</ParamField>
+
+<ParamField path="alert.lat" type="number" required>
+  Latitude of the event.
+</ParamField>
+
+<ParamField path="alert.lng" type="number" required>
+  Longitude of the event.
+</ParamField>
+
+<ParamField path="alert.city" type="string">
+  Nearest city or district.
+</ParamField>
+
+<ParamField path="alert.state" type="string">
+  State, region, or prefecture.
+</ParamField>
+
+<ParamField path="alert.source" type="string" required>
+  Data source: `USGS`, `NOAA`, `NASA EONET`, `GDACS`, `Tavily`, `news`, or `agent`.
+</ParamField>
+
+## Broadcasting Mechanism
+
+The `ConnectionManager` handles broadcasting to all connected clients:
+
+```python
+async def broadcast(self, data: dict):
+    dead = []
+    for ws in self._connections:
+        try:
+            await ws.send_json(data)
+        except Exception:
+            dead.append(ws)
+    # Clean up dead connections
+    for ws in dead:
+        self._connections.remove(ws)
+```
+
+**Key file**: `server/app/main.py:50-58`
+
+<Info>
+Dead connections are automatically removed during broadcast. No explicit error handling is needed on the client side.
+</Info>
+
+## WebSocket Endpoint
+
+The FastAPI WebSocket endpoint handles connection lifecycle:
+
+```python
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    device_id = (ws.query_params.get("deviceId") or "").strip()
+    await ws_manager.connect(ws, device_id)
+    try:
+        # Mark device as connected in database
+        if device_id and ws.client:
+            storage.upsert_user({
+                "id": device_id,
+                "ip": ws.client.host or "",
+                "port": ws.client.port or 0,
+                "connected": True,
+            })
+        # Keep connection alive
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        disconnected_id = ws_manager.disconnect(ws)
+        if disconnected_id:
+            storage.set_user_connected(disconnected_id, False)
+```
+
+**Key file**: `server/app/main.py:140-157`
+
+## Integration with AI Agent
+
+When the AI agent saves a new alert, it broadcasts via WebSocket:
+
+```python
+# In disaster_agent.py:452-471
+if self.ws_manager:
+    try:
+        asyncio.create_task(
+            self.ws_manager.broadcast({
+                "event": "alert:new",
+                "alert": {
+                    "id":       alert["id"],
+                    "type":     alert["type"],
+                    "severity": alert["severity"],
+                    "title":    alert["title"],
+                    "lat":      alert["lat"],
+                    "lng":      alert["lng"],
+                    "city":     alert.get("city"),
+                    "state":    alert.get("state"),
+                    "source":   alert["source"],
+                },
+            })
+        )
+    except Exception as ws_err:
+        logger.warning(f"WebSocket broadcast failed: {ws_err}")
+```
+
+<Warning>
+WebSocket broadcast failures are logged but do not block alert storage. Alerts are always saved to the database, even if the broadcast fails.
+</Warning>
+
+## Connection Management
+
+### Registration
+
+Devices register before connecting to WebSocket:
+
+```python
+@app.post("/api/register")
+async def api_register(request: Request, body: Optional[RegisterRequest] = None):
+    device_id = (body.deviceId or "").strip()
+    if not device_id:
+        device_id = str(uuid.uuid4())
+    forwarded = request.headers.get("x-forwarded-for")
+    ip = forwarded.split(",")[0].strip() if forwarded else request.client.host
+    port = request.client.port if request.client else 0
+    user = {"id": device_id, "ip": ip, "port": port, "connected": False}
+    storage.upsert_user(user)
+    logger.info(f"[api] Registered device {device_id} from {ip}:{port}")
+    return {"user_id": device_id}
+```
+
+**Key file**: `server/app/main.py:118-132`
+
+### Disconnection Handling
+
+```python
+def disconnect(self, ws: WebSocket) -> Optional[str]:
+    device_id = self._device_by_ws.pop(id(ws), None)
+    self._connections.remove(ws)
+    logger.info(f"[ws] Disconnected. Total: {len(self._connections)}")
+    return device_id
+```
+
+When a device disconnects, it's marked as inactive in the database:
+
+```python
+except WebSocketDisconnect:
+    disconnected_id = ws_manager.disconnect(ws)
+    if disconnected_id:
+        storage.set_user_connected(disconnected_id, False)
+```
+
+## Client-Side Example
+
+Here's how a client would connect and listen for alerts:
+
+```javascript
+const deviceId = 'your-device-id';
+const ws = new WebSocket(`ws://localhost:8000/ws?deviceId=${deviceId}`);
+
+ws.onopen = () => {
+  console.log('Connected to alert stream');
+};
+
+ws.onmessage = (event) => {
+  const message = JSON.parse(event.data);
+  
+  if (message.event === 'alert:new') {
+    const alert = message.alert;
+    console.log(`New ${alert.severity} ${alert.type} alert:`, alert.title);
+    console.log(`Location: ${alert.city}, ${alert.state}`);
+    console.log(`Coordinates: ${alert.lat}, ${alert.lng}`);
+    // Handle alert (display notification, update UI, etc.)
+  }
+};
+
+ws.onerror = (error) => {
+  console.error('WebSocket error:', error);
+};
+
+ws.onclose = () => {
+  console.log('Disconnected from alert stream');
+  // Reconnection logic here
+};
+```
+
+## CORS Configuration
+
+The server allows WebSocket connections from any origin:
+
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+**Key file**: `server/app/main.py:105-110`
+
+<Tip>
+For production deployments, restrict `allow_origins` to your specific domains for security.
+</Tip>
+
+## Lifespan Integration
+
+The WebSocket manager is initialized during application startup:
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    storage.ensure_data_dir()
+    notifications.ws_manager = ws_manager  # Make available to notification service
+    logger.info("DisasterAI backend started — JSON storage ready")
+    
+    agent = create_agent(ws_manager=ws_manager)  # Pass to AI agent
+    # ... scheduler setup ...
+    
+    yield
+    
+    scheduler.shutdown(wait=False)
+    logger.info("DisasterAI backend shutting down")
+```
+
+**Key file**: `server/app/main.py:64-95`
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="AI Agent" icon="robot" href="/features/ai-agent">
+    Learn how alerts are discovered
+  </Card>
+  <Card title="BLE Mesh" icon="bluetooth" href="/features/ble-mesh">
+    Share alerts offline via Bluetooth
+  </Card>
+</CardGroup>

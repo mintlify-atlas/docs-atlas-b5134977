@@ -1,0 +1,231 @@
+---
+title: "Server Setup"
+description: "Install and configure the Sift FastAPI backend server"
+---
+
+This guide walks you through setting up the Sift backend server, which handles disaster alert aggregation, AI-powered discovery, and real-time WebSocket connections.
+
+## Prerequisites
+
+Before you begin, ensure you have:
+
+- Python 3.8 or higher installed
+- `pip` package manager
+- `python3-venv` module (for creating virtual environments)
+
+### Installing Python Virtual Environment
+
+If you don't have `python3-venv` installed (common on Ubuntu/Debian systems):
+
+```bash
+sudo apt install -y python3-venv
+```
+
+## Installation
+
+<Steps>
+  <Step title="Navigate to server directory">
+    ```bash
+    cd server
+    ```
+  </Step>
+
+  <Step title="Create virtual environment">
+    Create a Python virtual environment to isolate dependencies:
+    
+    ```bash
+    python3 -m venv venv
+    ```
+    
+    This creates a `venv/` directory containing the isolated Python environment.
+  </Step>
+
+  <Step title="Activate virtual environment">
+    Activate the virtual environment:
+    
+    **Linux/macOS:**
+    ```bash
+    source venv/bin/activate
+    ```
+    
+    **Windows:**
+    ```bash
+    venv\Scripts\activate
+    ```
+    
+    You should see `(venv)` prepended to your terminal prompt.
+  </Step>
+
+  <Step title="Install dependencies">
+    Install all required Python packages from `requirements.txt`:
+    
+    ```bash
+    pip install -r requirements.txt
+    ```
+    
+    This installs:
+    - FastAPI 0.111.0 - Web framework
+    - Uvicorn 0.30.1 - ASGI server
+    - OpenAI 1.35.0 - AI agent integration
+    - APScheduler 3.10.4+ - Scheduled disaster agent
+    - Tavily Python 0.3.3+ - Web search for news
+    - httpx, feedparser, and other utilities
+  </Step>
+
+  <Step title="Start the server">
+    Run the server using Uvicorn:
+    
+    ```bash
+    uvicorn app.main:app --reload --port 8000
+    ```
+    
+    **Options:**
+    - `--reload` - Auto-reload on code changes (development only)
+    - `--port 8000` - Server port (use 8001 for production deployments)
+    
+    **Alternative:** Use the provided run script:
+    ```bash
+    ./run.sh
+    ```
+  </Step>
+
+  <Step title="Verify server is running">
+    Test the health endpoint:
+    
+    ```bash
+    curl http://localhost:8000/health
+    ```
+    
+    You should receive a successful response.
+  </Step>
+</Steps>
+
+## Remote Deployment
+
+When deploying to a remote server (e.g., DigitalOcean Droplet, AWS EC2):
+
+<Steps>
+  <Step title="Choose a port">
+    Run the server on a specific port (e.g., 8001):
+    
+    ```bash
+    uvicorn app.main:app --port 8001
+    ```
+    
+    Note: Remove `--reload` in production for better performance.
+  </Step>
+
+  <Step title="Configure OS firewall">
+    Open the port in your operating system firewall:
+    
+    **Using UFW (Ubuntu/Debian):**
+    ```bash
+    sudo ufw allow 8001/tcp
+    sudo ufw reload
+    ```
+    
+    **Verify firewall rules:**
+    ```bash
+    sudo ufw status
+    ```
+  </Step>
+
+  <Step title="Configure cloud firewall">
+    If using a cloud provider, update the security group/firewall rules:
+    
+    - **DigitalOcean:** Add inbound rule for TCP port 8001
+    - **AWS:** Update Security Group to allow inbound TCP on port 8001
+    - **GCP:** Add firewall rule for TCP port 8001
+  </Step>
+
+  <Step title="Test remote access">
+    From another machine, test connectivity:
+    
+    ```bash
+    curl http://YOUR_SERVER_IP:8001/health
+    ```
+    
+    Replace `YOUR_SERVER_IP` with your server's public IP address.
+  </Step>
+</Steps>
+
+## Running as a Service
+
+For production deployments, use a process manager to keep the server running:
+
+### Using systemd (Linux)
+
+Create a service file at `/etc/systemd/system/sift.service`:
+
+```ini
+[Unit]
+Description=Sift Disaster Alert Server
+After=network.target
+
+[Service]
+User=your-username
+WorkingDirectory=/path/to/server
+Environment="PATH=/path/to/server/venv/bin"
+ExecStart=/path/to/server/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8001
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the service:
+
+```bash
+sudo systemctl enable sift
+sudo systemctl start sift
+sudo systemctl status sift
+```
+
+## Troubleshooting
+
+### Virtual Environment Creation Fails
+
+**Error:** `The virtual environment was not created successfully`
+
+**Solution:** Install `python3-venv`:
+```bash
+sudo apt install -y python3-venv
+```
+
+### Port Already in Use
+
+**Error:** `Address already in use`
+
+**Solution:** Choose a different port or kill the process using the port:
+```bash
+lsof -ti:8000 | xargs kill -9
+```
+
+### Module Import Errors
+
+**Error:** `ModuleNotFoundError`
+
+**Solution:** Ensure virtual environment is activated and dependencies are installed:
+```bash
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Clients Cannot Connect to Remote Server
+
+**Checklist:**
+1. Server is running on the correct port
+2. OS firewall allows the port (UFW/iptables)
+3. Cloud security group allows inbound TCP on the port
+4. Client `CENTRAL_SERVER_URL` matches server IP and port
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Client Setup" icon="mobile" href="/deployment/client-setup">
+    Configure the React Native mobile app
+  </Card>
+  <Card title="Configuration" icon="gear" href="/deployment/configuration">
+    Set up API keys and server settings
+  </Card>
+</CardGroup>

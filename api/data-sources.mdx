@@ -1,0 +1,351 @@
+---
+title: 'Data Sources'
+description: 'Official disaster data sources used by Sift'
+---
+
+Sift aggregates real-time disaster data from multiple authoritative sources to provide comprehensive global coverage. The agent automatically fetches data from these sources every scheduled run.
+
+## Overview
+
+All data sources are fetched asynchronously via the `data_sources.py` service. Each source has its own fetcher function that handles API calls, data parsing, and error handling.
+
+```python
+# Source code: server/app/services/data_sources.py
+
+HEADERS = {
+    "User-Agent": "DisasterAI/1.0 (hackathon; https://github.com/disasterai)",
+    "Accept": "application/json",
+}
+```
+
+---
+
+## USGS Earthquakes
+
+**Source:** United States Geological Survey  
+**Coverage:** Global earthquakes M4.5+ in the last hour  
+**API Endpoint:** `https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_hour.geojson`
+
+### How It Works
+
+```python
+async def fetch_usgs_earthquakes() -> list[dict]:
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(USGS_URL, headers=HEADERS)
+        resp.raise_for_status()
+        data = resp.json()
+
+    results = []
+    for feature in data.get("features", []):
+        props  = feature.get("properties", {})
+        coords = feature.get("geometry", {}).get("coordinates", [])
+        mag   = props.get("mag", 0) or 0
+        place = props.get("place", "Unknown location")
+        results.append({
+            "source":    "USGS",
+            "type":      "earthquake",
+            "magnitude": mag,
+            "place":     place,
+            "lat":       coords[1],
+            "lng":       coords[0],
+            "depth_km":  coords[2] if len(coords) > 2 else None,
+            "time_ms":   props.get("time", 0),
+            "url":       props.get("url", ""),
+            "title":     f"M{mag} Earthquake - {place}",
+        })
+```
+
+### Data Structure
+
+Each earthquake event includes:
+- **Magnitude** (M4.5+)
+- **Location** (place name and coordinates)
+- **Depth** in kilometers
+- **Timestamp** in milliseconds
+- **USGS URL** for detailed information
+
+---
+
+## NOAA Weather Alerts
+
+**Source:** National Oceanic and Atmospheric Administration  
+**Coverage:** Active weather alerts in the United States  
+**API Endpoint:** `https://api.weather.gov/alerts/active?status=actual&message_type=alert`  
+**Severity Filter:** Only Moderate, Severe, and Extreme alerts
+
+### How It Works
+
+```python
+async def fetch_noaa_alerts() -> list[dict]:
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(
+            NOAA_URL,
+            headers={**HEADERS, "Accept": "application/geo+json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    results = []
+    for feature in data.get("features", [])[:40]:
+        props    = feature.get("properties", {})
+        severity = props.get("severity", "Minor")
+        # Only keep Extreme, Severe, Moderate
+        if severity not in ("Extreme", "Severe", "Moderate"):
+            continue
+        lat, lng = _polygon_centroid(feature.get("geometry"))
+        event = props.get("event", "Weather Alert")
+        area  = props.get("areaDesc", "Unknown area")
+        results.append({
+            "source":   "NOAA",
+            "type":     _noaa_event_to_type(event),
+            "severity": _noaa_severity_map(severity),
+            "event":    event,
+            "area":     area,
+            "headline": props.get("headline", event),
+            "lat":      lat,
+            "lng":      lng,
+            "onset":    props.get("onset", ""),
+            "title":    f"{event} — {area[:60]}",
+        })
+```
+
+### Type Mapping
+
+NOAA event names are automatically mapped to Sift disaster types:
+
+```python
+def _noaa_event_to_type(event: str) -> str:
+    e = event.lower()
+    if "flood" in e:
+        return "flood"
+    if "fire" in e or "red flag" in e:
+        return "fire"
+    if "tsunami" in e:
+        return "tsunami"
+    if any(w in e for w in ("tornado", "thunder", "hurricane", 
+                             "tropical", "wind", "winter", 
+                             "snow", "ice", "blizzard", "storm")):
+        return "storm"
+    return "other"
+```
+
+### Severity Mapping
+
+```python
+"Extreme"  → "critical"
+"Severe"   → "high"
+"Moderate" → "medium"
+```
+
+### Geometry Handling
+
+Since NOAA provides polygon/multipolygon geometries, coordinates are extracted using centroid calculation:
+
+```python
+def _polygon_centroid(geometry) -> tuple[float, float]:
+    # Calculates average lat/lng from polygon ring points
+    # Supports Polygon, MultiPolygon, and Point geometries
+```
+
+---
+
+## NASA EONET
+
+**Source:** NASA Earth Observatory Natural Event Tracker  
+**Coverage:** Global natural events (wildfires, volcanoes, severe storms)  
+**API Endpoint:** `https://eonet.gsfc.nasa.gov/api/v3/events?status=open&days=1&limit=20`
+
+### How It Works
+
+```python
+async def fetch_nasa_eonet() -> list[dict]:
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(EONET_URL, headers=HEADERS)
+        resp.raise_for_status()
+        data = resp.json()
+
+    results = []
+    for event in data.get("events", []):
+        title      = event.get("title", "Unknown Event")
+        categories = [c.get("title", "") for c in event.get("categories", [])]
+        geometries = event.get("geometry", [])
+        latest = geometries[-1]  # Use most recent geometry
+        coords = latest.get("coordinates", [])
+        
+        # Handle both point and multipoint geometries
+        if isinstance(coords[0], (list, tuple)):
+            lng, lat = coords[0][0], coords[0][1]
+        else:
+            lng, lat = coords[0], coords[1]
+        
+        results.append({
+            "source":     "NASA EONET",
+            "type":       _eonet_category_to_type(categories),
+            "title":      title,
+            "categories": categories,
+            "lat":        lat,
+            "lng":        lng,
+            "date":       latest.get("date", ""),
+        })
+```
+
+### Category Mapping
+
+```python
+def _eonet_category_to_type(categories: list[str]) -> str:
+    cats = [c.lower() for c in categories]
+    if any("wildfire" in c or "fire" in c for c in cats):
+        return "fire"
+    if any("flood" in c for c in cats):
+        return "flood"
+    if any("tsunami" in c for c in cats):
+        return "tsunami"
+    if any("earthquake" in c or "landslide" in c for c in cats):
+        return "earthquake"
+    if any("storm" in c or "cyclone" in c or "hurricane" in c for c in cats):
+        return "storm"
+    return "other"
+```
+
+---
+
+## GDACS
+
+**Source:** Global Disaster Alert and Coordination System  
+**Coverage:** Global Red/Orange disaster alerts  
+**API Endpoint:** `https://www.gdacs.org/xml/rss.xml`  
+**Alert Level Filter:** Only Red and Orange alerts
+
+### How It Works
+
+```python
+async def fetch_gdacs_alerts() -> list[dict]:
+    loop = asyncio.get_event_loop()
+    # GDACS uses RSS/XML, so we use feedparser
+    feed = await loop.run_in_executor(None, feedparser.parse, GDACS_URL)
+
+    results = []
+    for entry in feed.entries[:25]:
+        title = entry.get("title", "Unknown Disaster")
+        alert_level = (
+            getattr(entry, "gdacs_alertlevel", None)
+            or entry.get("gdacs_alertlevel")
+            or _extract_gdacs_level_from_title(title)
+        )
+        # Only keep Red or Orange
+        if not alert_level or alert_level.lower() not in ("red", "orange"):
+            continue
+        
+        lat = _safe_float(getattr(entry, "geo_lat", None))
+        lng = _safe_float(getattr(entry, "geo_long", None))
+        
+        results.append({
+            "source":      "GDACS",
+            "type":        _gdacs_title_to_type(title),
+            "severity":    "critical" if alert_level.lower() == "red" else "high",
+            "title":       title[:120],
+            "alert_level": alert_level,
+            "lat":         lat,
+            "lng":         lng,
+            "link":        entry.get("link", ""),
+        })
+```
+
+### Type Detection
+
+```python
+def _gdacs_title_to_type(title: str) -> str:
+    t = title.lower()
+    if "earthquake" in t or "quake" in t:
+        return "earthquake"
+    if "flood" in t:
+        return "flood"
+    if "cyclone" in t or "hurricane" in t or "typhoon" in t or "storm" in t:
+        return "storm"
+    if "tsunami" in t:
+        return "tsunami"
+    if "volcano" in t or "eruption" in t:
+        return "other"
+    if "fire" in t or "wildfire" in t:
+        return "fire"
+    return "other"
+```
+
+---
+
+## Tavily Web Search
+
+**Source:** Tavily AI-powered search API  
+**Coverage:** Recent disaster news from trusted sources  
+**Usage:** Fills gaps not covered by official APIs (chemical spills, infrastructure failures, regional disasters)
+
+### Implementation
+
+The web search is implemented in `disaster_agent.py:388` as a tool available to the AI agent:
+
+```python
+async def _search_web(self, query: str) -> dict:
+    if not settings.tavily_api_key:
+        return {"error": "TAVILY_API_KEY not set", "results": []}
+    
+    from tavily import TavilyClient
+    client = TavilyClient(api_key=settings.tavily_api_key)
+    
+    raw = await loop.run_in_executor(
+        None,
+        lambda: client.search(
+            query=query,
+            search_depth="basic",
+            max_results=5,
+            include_domains=[
+                "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk",
+                "usgs.gov", "noaa.gov", "weather.gov", "gdacs.org",
+                "nasa.gov", "fema.gov", "cdc.gov", "who.int",
+                "theguardian.com", "npr.org",
+            ],
+        ),
+    )
+    
+    snippets = [
+        {
+            "title":   r.get("title", ""),
+            "content": r.get("content", "")[:400],
+            "url":     r.get("url", ""),
+        }
+        for r in raw.get("results", [])
+    ]
+    return {"query": query, "results": snippets}
+```
+
+### Trusted Domains
+
+Web search is restricted to verified news sources and official disaster monitoring sites to ensure data quality.
+
+---
+
+## Error Handling
+
+All data source functions include comprehensive error handling:
+
+```python
+try:
+    # Fetch and parse data
+except Exception as e:
+    logger.error(f"[data_sources][SOURCE_NAME] Error: {e}")
+    return []  # Return empty list on failure
+```
+
+This ensures that if one source fails, the agent continues to fetch from other sources.
+
+## Configuration
+
+Location: `server/app/services/data_sources.py:10-13`
+
+```python
+USGS_URL  = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_hour.geojson"
+NOAA_URL  = "https://api.weather.gov/alerts/active?status=actual&message_type=alert"
+EONET_URL = "https://eonet.gsfc.nasa.gov/api/v3/events?status=open&days=1&limit=20"
+GDACS_URL = "https://www.gdacs.org/xml/rss.xml"
+```
+
+All endpoints are public APIs and require no authentication.

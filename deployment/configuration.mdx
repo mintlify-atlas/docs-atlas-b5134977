@@ -1,0 +1,408 @@
+---
+title: "Configuration"
+description: "Configure server settings, API keys, and client connection parameters"
+---
+
+This guide covers all configuration options for the Sift server and client applications.
+
+## Server Configuration
+
+The server uses environment variables and a `config.py` file for configuration.
+
+### Environment Variables
+
+Create a `.env` file in the `server/` directory:
+
+```bash .env
+# Server Settings
+PORT=8000
+
+# AI Model Configuration
+H4H_API_KEY=h4h-sift
+H4H_BASE_URL=http://165.245.139.104:443/v1
+
+# Web Search API (optional)
+TAVILY_API_KEY=your_tavily_api_key_here
+
+# Disaster Agent Schedule
+AGENT_INTERVAL_MINUTES=20
+```
+
+### Configuration Options
+
+The following settings are available in `server/app/config.py:5-10`:
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `port` | int | `8000` | Server port for HTTP/WebSocket connections |
+| `h4h_api_key` | str | `h4h-sift` | API key for Hack4Hope AI model |
+| `h4h_base_url` | str | `http://165.245.139.104:443/v1` | Base URL for AI model endpoint |
+| `tavily_api_key` | str | `""` | API key for Tavily web search (optional) |
+| `agent_interval_minutes` | int | `20` | How often the disaster agent runs (in minutes) |
+
+### Port Configuration
+
+**Development:**
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+**Production:**
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8001
+```
+
+<Note>
+  Use `--host 0.0.0.0` to allow connections from any network interface (required for remote access).
+</Note>
+
+### Disaster Agent Configuration
+
+The AI disaster agent runs on a schedule to fetch and process alerts from multiple sources:
+
+- **USGS** - Earthquake data
+- **NOAA** - Severe weather alerts
+- **NASA EONET** - Wildfire and environmental events
+- **GDACS** - Global Disaster Alert and Coordination System
+- **Tavily** - Web search for recent disaster news (requires API key)
+
+**Adjust agent frequency:**
+
+Set `AGENT_INTERVAL_MINUTES` in `.env`:
+```bash
+# Run every 10 minutes (more frequent)
+AGENT_INTERVAL_MINUTES=10
+
+# Run every hour (less frequent)
+AGENT_INTERVAL_MINUTES=60
+```
+
+<Warning>
+  More frequent runs may increase API usage and costs if using paid services.
+</Warning>
+
+### Data Storage
+
+The server stores data in JSON files located in `server/data/`:
+
+- `alerts.json` - All disaster alerts
+- `users.json` - Registered devices
+
+These files are created automatically at runtime if they don't exist.
+
+## Client Configuration
+
+Client settings are defined in `Client/src/config/constants.js`.
+
+### Server Connection
+
+Configure the central server URL in `constants.js:74-80`:
+
+```javascript
+export const APP_CONFIG = {
+  CENTRAL_SERVER_URL: 'http://165.245.139.104:8001',
+  VERSION: '1.0.0',
+  DEBUG_MODE: __DEV__ ?? false,
+};
+```
+
+**Connection scenarios:**
+
+<Tabs>
+  <Tab title="Local Development">
+    Use your computer's LAN IP address:
+    
+    ```javascript
+    CENTRAL_SERVER_URL: 'http://192.168.1.100:8000'
+    ```
+    
+    **Find your IP:**
+    ```bash
+    # macOS/Linux
+    ifconfig | grep "inet "
+    
+    # Windows
+    ipconfig
+    ```
+  </Tab>
+  
+  <Tab title="Remote Server">
+    Use your server's public IP and port:
+    
+    ```javascript
+    CENTRAL_SERVER_URL: 'http://165.245.139.104:8001'
+    ```
+    
+    Ensure the port is open in firewall settings.
+  </Tab>
+  
+  <Tab title="ngrok Tunnel">
+    Use ngrok for temporary public URLs:
+    
+    ```bash
+    ngrok http 8000
+    ```
+    
+    Then update the config:
+    ```javascript
+    CENTRAL_SERVER_URL: 'https://your-tunnel.ngrok-free.app'
+    ```
+  </Tab>
+</Tabs>
+
+### Bluetooth Configuration
+
+BLE mesh settings in `constants.js:31-36`:
+
+```javascript
+export const BLE_CONFIG = {
+  SERVICE_UUID: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+  CHARACTERISTIC_UUID: 'a1b2c3d4-e5f6-7890-abcd-ef1234567891',
+  DEVICE_NAME_PREFIX: 'DisasterNews',
+  SCAN_DURATION_MS: 10000,
+};
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `SERVICE_UUID` | Custom UUID | BLE service identifier for Sift devices |
+| `CHARACTERISTIC_UUID` | Custom UUID | BLE characteristic for data transfer |
+| `DEVICE_NAME_PREFIX` | `DisasterNews` | Prefix for device advertising names |
+| `SCAN_DURATION_MS` | `10000` | How long to scan for nearby devices (ms) |
+
+<Warning>
+  Changing UUIDs will make devices incompatible with each other. Only modify if necessary and ensure all clients use the same values.
+</Warning>
+
+### Polling Configuration
+
+Settings for periodic server polling in `constants.js:52-62`:
+
+```javascript
+export const POLLING_CONFIG = {
+  POLL_INTERVAL_MS: 30000,      // Poll every 30 seconds
+  ALERTS_PER_POLL: 20,          // Fetch 20 alerts per request
+  RETRY_DELAY_MS: 5000,         // Wait 5s before retry
+  MAX_RETRIES: 3,               // Maximum retry attempts
+};
+
+export const MANUAL_POLL_HOURS = 2;  // Fetch last 2 hours of alerts
+export const REGISTRATION_INTERVAL_MS = 60000;  // Re-register every 60s
+```
+
+**Adjust polling frequency:**
+
+```javascript
+// More frequent updates (higher battery usage)
+POLL_INTERVAL_MS: 15000,  // Every 15 seconds
+
+// Less frequent updates (battery saving)
+POLL_INTERVAL_MS: 60000,  // Every 60 seconds
+```
+
+### WebSocket Configuration
+
+Real-time alert delivery settings in `constants.js:64-67`:
+
+```javascript
+export const WEBSOCKET_CONFIG = {
+  PATH: '/ws',
+  RECONNECT_DELAY_MS: 5000,
+};
+```
+
+WebSocket connection URL is automatically constructed:
+```javascript
+// Example: ws://165.245.139.104:8001/ws?deviceId=abc-123
+```
+
+### Storage Configuration
+
+Local data storage limits in `constants.js:38-50`:
+
+```javascript
+export const STORAGE_KEYS = {
+  RECEIVED_MESSAGE_IDS: '@sift/received_message_ids',
+  LOCAL_ALERTS: '@sift/local_alerts',
+  LOCAL_CHAT_MESSAGES: '@sift/local_chat_messages',
+  SETTINGS: '@sift/settings',
+};
+
+export const STORAGE_LIMITS = {
+  MAX_MESSAGE_IDS: 1000,        // Dedupe 1000 message IDs
+  MAX_LOCAL_ALERTS: 500,        // Store 500 alerts locally
+  MAX_CHAT_MESSAGES: 200,       // Keep 200 chat messages
+  MAX_RUNTIME_ALERTS: 100,      // 100 alerts in memory
+};
+```
+
+**Adjust limits based on device capacity:**
+
+```javascript
+// For low-end devices
+MAX_LOCAL_ALERTS: 100,
+MAX_CHAT_MESSAGES: 50,
+
+// For high-end devices
+MAX_LOCAL_ALERTS: 1000,
+MAX_CHAT_MESSAGES: 500,
+```
+
+### Alert Severity Configuration
+
+Alert severity levels and colors in `constants.js:14-29`:
+
+```javascript
+export const SEVERITY_COLORS = {
+  critical: '#ff4757',  // Red
+  high: '#ff6b35',      // Orange-red
+  medium: '#ffa502',    // Orange
+  low: '#2ed573',       // Green
+  info: '#4a9eff',      // Blue
+};
+
+export const SEVERITY_LEVELS = {
+  CRITICAL: 10,
+  SEVERE: 8,
+  HIGH: 6,
+  MODERATE: 4,
+  LOW: 2,
+  INFO: 1,
+};
+```
+
+### Map Configuration
+
+Default map view settings in `constants.js:82-89`:
+
+```javascript
+export const MAP_CONFIG = {
+  DEFAULT_LATITUDE: 20.5937,      // Center of India
+  DEFAULT_LONGITUDE: 78.9629,
+  DEFAULT_LATITUDE_DELTA: 4,      // Zoom level
+  DEFAULT_LONGITUDE_DELTA: 4,
+  ALERT_CIRCLE_RADIUS_M: 1000,    // Alert marker radius
+  MAP_TILE_PATH: '',
+};
+```
+
+**Customize for your region:**
+
+```javascript
+// United States
+DEFAULT_LATITUDE: 39.8283,
+DEFAULT_LONGITUDE: -98.5795,
+
+// Europe
+DEFAULT_LATITUDE: 50.8503,
+DEFAULT_LONGITUDE: 4.3517,
+```
+
+## API Keys
+
+### Tavily API Key (Optional)
+
+Tavily provides web search for recent disaster news.
+
+<Steps>
+  <Step title="Sign up for Tavily">
+    Visit [tavily.com](https://tavily.com) and create an account.
+  </Step>
+  
+  <Step title="Get API key">
+    Navigate to your dashboard and copy your API key.
+  </Step>
+  
+  <Step title="Add to environment">
+    Update `server/.env`:
+    
+    ```bash
+    TAVILY_API_KEY=tvly-abc123...
+    ```
+  </Step>
+  
+  <Step title="Restart server">
+    Restart the server to apply changes:
+    
+    ```bash
+    # Stop current server (Ctrl+C)
+    uvicorn app.main:app --reload --port 8000
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Without a Tavily API key, the disaster agent will still fetch alerts from USGS, NOAA, NASA EONET, and GDACS, but won't include web search results.
+</Note>
+
+### Hack4Hope AI Model
+
+The default configuration uses the Hack4Hope AI endpoint:
+
+```bash
+H4H_API_KEY=h4h-sift
+H4H_BASE_URL=http://165.245.139.104:443/v1
+```
+
+To use a different OpenAI-compatible endpoint, update these values in `.env`.
+
+## Verification
+
+### Test Server Configuration
+
+```bash
+curl http://localhost:8000/health
+```
+
+Expected response:
+```json
+{"status": "healthy"}
+```
+
+### Test Client Connection
+
+Open the Sift app and check the connection status:
+
+1. Server connection indicator should be green
+2. Navigate to alerts - you should see data loading
+3. Check debug logs for connection errors
+
+### Test WebSocket
+
+```bash
+# Install wscat
+npm install -g wscat
+
+# Connect to WebSocket
+wscat -c ws://localhost:8000/ws?deviceId=test-123
+```
+
+You should see:
+```json
+{"type": "connection", "message": "Connected"}
+```
+
+## Security Considerations
+
+<Warning>
+  Do not commit `.env` files to version control. Add `.env` to your `.gitignore`.
+</Warning>
+
+**Recommended practices:**
+
+1. **Use HTTPS in production** - Set up SSL/TLS certificates
+2. **Restrict API keys** - Limit API key permissions and scope
+3. **Firewall rules** - Only open necessary ports
+4. **Regular updates** - Keep dependencies updated
+5. **Environment isolation** - Use different API keys for dev/prod
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Server Setup" icon="server" href="/deployment/server-setup">
+    Install and run the backend server
+  </Card>
+  <Card title="Client Setup" icon="mobile" href="/deployment/client-setup">
+    Set up the React Native app
+  </Card>
+</CardGroup>

@@ -1,0 +1,403 @@
+---
+title: 'Interactive Map View'
+description: 'Real-time disaster alert visualization with Leaflet and React Native WebView'
+icon: 'map'
+---
+
+## Overview
+
+Sift's map view displays disaster alerts as interactive circles on a map, color-coded by severity. Built with Leaflet and rendered in a React Native WebView, the map automatically fits bounds to show all alerts and supports dark/light themes.
+
+## Implementation
+
+The map is implemented in `Client/src/components/AlertsMap.js` using:
+
+- **Leaflet**: Open-source JavaScript library for interactive maps
+- **React Native WebView**: Embeds the Leaflet map in the mobile app
+- **CARTO Basemaps**: Light and dark tile layers
+
+## Alert Filtering
+
+Only alerts that meet these criteria are displayed:
+
+<Steps>
+  <Step title="Active Status">
+    `alert.active !== false`
+  </Step>
+  <Step title="Valid Coordinates">
+    Both `lat` and `lng` are numbers and not NaN.
+  </Step>
+</Steps>
+
+```javascript
+function hasValidCoords(alert) {
+  const lat = alert?.lat ?? alert?.latitude;
+  const lng = alert?.lng ?? alert?.longitude ?? alert?.long;
+  return (
+    typeof lat === 'number' &&
+    typeof lng === 'number' &&
+    !Number.isNaN(lat) &&
+    !Number.isNaN(lng)
+  );
+}
+
+function isActive(alert) {
+  return alert?.active !== false;
+}
+
+const mapAlerts = alerts.filter((a) => isActive(a) && hasValidCoords(a));
+```
+
+**Implementation**: `Client/src/components/AlertsMap.js:7-20, 122`
+
+## Severity Color Mapping
+
+Alerts are color-coded based on severity:
+
+```javascript
+const SEVERITY_COLORS = {
+  critical: '#FF3B30',  // Red
+  high: '#FF9500',      // Orange
+  medium: '#FFCC00',    // Yellow
+  low: '#34C759',       // Green
+  info: '#4A9EFF',      // Blue
+};
+
+function severityColor(severity) {
+  if (!severity) return SEVERITY_COLORS.info;
+  const key = String(severity).toLowerCase();
+  if (SEVERITY_COLORS[key]) return SEVERITY_COLORS[key];
+  
+  // Numeric severity mapping
+  const n = Number(severity);
+  if (n >= 9) return SEVERITY_COLORS.critical;
+  if (n >= 7) return SEVERITY_COLORS.high;
+  if (n >= 4) return SEVERITY_COLORS.medium;
+  return SEVERITY_COLORS.low;
+}
+```
+
+**Implementation**: `Client/src/components/AlertsMap.js:22-31`
+
+## Map HTML Generation
+
+The map is built as an HTML string with embedded Leaflet code:
+
+```javascript
+function buildMapHTML(centerLat, centerLng, zoom, alerts, circleRadiusM, theme) {
+  const points = (alerts || []).map((a) => ({
+    lat: a.lat ?? a.latitude,
+    lng: a.lng ?? a.longitude ?? a.long,
+    title: a.title || a.type || 'Alert',
+    desc: [a.city, a.state, a.country].filter(Boolean).join(', ') || a.description || '',
+    color: severityColor(a.severity),
+    severity: a.severity ? String(a.severity) : '',
+  }));
+  
+  const pointsEscaped = JSON.stringify(points).replace(/</g, '\\u003c');
+  const radius = circleRadiusM || 15000;  // Default 15km radius
+  const isDark = theme !== 'light';
+  
+  // Select tile layer based on theme
+  const tileUrl = isDark
+    ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+    : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+  
+  // Theme colors
+  const bodyBg = isDark ? '#0a0a14' : '#f4f4f8';
+  const popupBg = isDark ? '#1a1a2e' : '#ffffff';
+  const popupBorder = isDark ? '#2e2e4e' : '#ddddee';
+  const popupText = isDark ? '#f0f0f8' : '#111122';
+  const popupSmall = isDark ? '#8888aa' : '#666688';
+  
+  return `<!DOCTYPE html>...`;
+}
+```
+
+**Implementation**: `Client/src/components/AlertsMap.js:33-103`
+
+## Leaflet Map Configuration
+
+The embedded HTML initializes Leaflet with:
+
+<ParamField path="center" type="[number, number]">
+  Initial map center `[lat, lng]`. Defaults to `MAP_CONFIG.DEFAULT_LATITUDE` and `MAP_CONFIG.DEFAULT_LONGITUDE`.
+</ParamField>
+
+<ParamField path="zoom" type="number">
+  Initial zoom level. Default: `8`.
+</ParamField>
+
+<ParamField path="zoomControl" type="boolean">
+  Show zoom controls. Always `true`.
+</ParamField>
+
+```javascript
+var center = [${centerLat}, ${centerLng}];
+var zoom = ${zoom};
+var map = L.map('map', { zoomControl: true }).setView(center, zoom);
+L.tileLayer('${tileUrl}', {
+  attribution: '&copy; OpenStreetMap &copy; CARTO',
+  subdomains: 'abcd',
+  maxZoom: 19
+}).addTo(map);
+```
+
+## Alert Visualization
+
+Each alert is rendered as:
+
+1. **Circle overlay**: Shows the approximate impact radius
+2. **Marker dot**: Pinpoints the exact location
+3. **Popup**: Displays alert details on click
+
+### Circle Overlay
+
+```javascript
+L.circle(latlng, {
+  radius: radiusM,              // 15km default
+  color: c,                     // Border color (severity-based)
+  fillColor: c,                 // Fill color
+  fillOpacity: 0.12,            // Translucent fill
+  weight: 1.5,                  // Border width
+  opacity: 0.7                  // Border opacity
+}).addTo(map);
+```
+
+### Marker Dot
+
+```javascript
+var dotIcon = L.divIcon({
+  className: '',
+  html: '<div style="width:12px;height:12px;border-radius:50%;background:' + c +
+        ';border:2px solid rgba(255,255,255,0.6);box-shadow:0 0 8px ' + c + ';"></div>',
+  iconSize: [12, 12],
+  iconAnchor: [6, 6],
+});
+L.marker(latlng, { icon: dotIcon }).addTo(map)
+  .bindPopup(
+    '<b>' + (p.title || 'Alert') + '</b>' +
+    (p.desc ? '<br><small>' + p.desc + '</small>' : '') +
+    (p.severity ? '<br><small style="color:' + c + '">' + p.severity + '</small>' : '')
+  );
+```
+
+**Implementation**: `Client/src/components/AlertsMap.js:87-95`
+
+## Auto-Fit Bounds
+
+The map automatically adjusts to show all alerts:
+
+```javascript
+var bounds = null;
+for (var i = 0; i < points.length; i++) {
+  var p = points[i];
+  var latlng = [p.lat, p.lng];
+  // ... create circle and marker ...
+  if (!bounds) bounds = L.latLngBounds(latlng, latlng);
+  else bounds.extend(latlng);
+}
+if (bounds && points.length > 0) {
+  map.fitBounds(bounds, { padding: [48, 48], maxZoom: 12 });
+}
+```
+
+**Implementation**: `Client/src/components/AlertsMap.js:96-99`
+
+<Info>
+Max zoom is capped at 12 to prevent over-zooming when there's only one alert.
+</Info>
+
+## React Component
+
+The `AlertsMap` component manages state and renders the WebView:
+
+```javascript
+export default function AlertsMap({ alerts: alertsProp, style, theme = 'dark' }) {
+  const [alerts, setAlerts] = useState(alertsProp ?? []);
+  
+  useEffect(() => {
+    if (alertsProp != null) {
+      setAlerts(alertsProp);
+      return;
+    }
+    // Load from local storage if no alerts provided
+    let mounted = true;
+    async function load() {
+      const list = await alertService.getLocalAlerts(STORAGE_LIMITS.MAX_LOCAL_ALERTS);
+      if (mounted) setAlerts(list);
+    }
+    load();
+    return () => { mounted = false; };
+  }, [alertsProp]);
+  
+  const mapAlerts = alerts.filter((a) => isActive(a) && hasValidCoords(a));
+  
+  // Rebuild HTML when alerts or theme change
+  const alertsKey = mapAlerts.map((a) => `${a.lat ?? a.latitude},${a.lng ?? a.longitude ?? a.long}`).join('|');
+  const html = useMemo(
+    () => buildMapHTML(
+      MAP_CONFIG.DEFAULT_LATITUDE,
+      MAP_CONFIG.DEFAULT_LONGITUDE,
+      8,
+      mapAlerts,
+      MAP_CONFIG.ALERT_CIRCLE_RADIUS_M,
+      theme
+    ),
+    [alertsKey, theme]
+  );
+  
+  return (
+    <View style={[styles.container, style]}>
+      <WebView
+        source={{ html }}
+        style={styles.webview}
+        scrollEnabled={true}
+        bounces={false}
+        javaScriptEnabled={true}
+        originWhitelist={['*']}
+        mixedContentMode="compatibility"
+      />
+      {mapAlerts.length === 0 && (
+        <View style={styles.placeholder}>
+          <Text style={styles.placeholderText}>No alerts with location yet</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+```
+
+**Implementation**: `Client/src/components/AlertsMap.js:105-156`
+
+## Props
+
+<ParamField path="alerts" type="array">
+  Optional array of alert objects. If not provided, loads from local storage.
+</ParamField>
+
+<ParamField path="style" type="ViewStyle">
+  Custom styles for the container.
+</ParamField>
+
+<ParamField path="theme" type="'light' | 'dark'">
+  Map theme. Default: `'dark'`.
+</ParamField>
+
+## Placeholder State
+
+When there are no alerts with valid coordinates, a placeholder is shown:
+
+```javascript
+{mapAlerts.length === 0 && (
+  <View style={styles.placeholder}>
+    <Text style={styles.placeholderText}>No alerts with location yet</Text>
+  </View>
+)}
+```
+
+**Styling**:
+```javascript
+placeholder: {
+  ...StyleSheet.absoluteFillObject,
+  justifyContent: 'center',
+  alignItems: 'center',
+  backgroundColor: '#0a0a14',
+  pointerEvents: 'none',  // Allow map interaction below
+}
+```
+
+## Performance Optimization
+
+The HTML is memoized to prevent unnecessary rebuilds:
+
+```javascript
+const alertsKey = mapAlerts
+  .map((a) => `${a.lat ?? a.latitude},${a.lng ?? a.longitude ?? a.long}`)
+  .join('|');
+
+const html = useMemo(
+  () => buildMapHTML(...),
+  [alertsKey, theme]  // Only rebuild if alerts or theme change
+);
+```
+
+**Implementation**: `Client/src/components/AlertsMap.js:124-136`
+
+<Tip>
+This ensures the WebView only re-renders when alerts change, not on every component re-render.
+</Tip>
+
+## Map Configuration Constants
+
+```javascript
+const MAP_CONFIG = {
+  DEFAULT_LATITUDE: 37.7749,        // San Francisco
+  DEFAULT_LONGITUDE: -122.4194,
+  ALERT_CIRCLE_RADIUS_M: 15000,     // 15km radius
+};
+```
+
+## Theme Support
+
+The map supports both light and dark themes:
+
+<Tabs>
+  <Tab title="Dark Theme">
+    - **Tile Layer**: `dark_all` from CARTO
+    - **Background**: `#0a0a14` (near-black)
+    - **Popup Background**: `#1a1a2e` (dark blue-gray)
+    - **Popup Border**: `#2e2e4e` (medium blue-gray)
+    - **Text**: `#f0f0f8` (off-white)
+  </Tab>
+  
+  <Tab title="Light Theme">
+    - **Tile Layer**: `light_all` from CARTO
+    - **Background**: `#f4f4f8` (light gray)
+    - **Popup Background**: `#ffffff` (white)
+    - **Popup Border**: `#ddddee` (light gray)
+    - **Text**: `#111122` (near-black)
+  </Tab>
+</Tabs>
+
+## Popup Content
+
+Each marker's popup displays:
+
+1. **Title** (bold): Alert title or type
+2. **Description**: City, state, country (if available)
+3. **Severity**: Color-coded severity level
+
+```javascript
+popup = '<b>' + (p.title || 'Alert') + '</b>' +
+        (p.desc ? '<br><small>' + p.desc + '</small>' : '') +
+        (p.severity ? '<br><small style="color:' + c + '">' + p.severity + '</small>' : '');
+```
+
+## Security
+
+The WebView is configured for safe HTML rendering:
+
+```javascript
+<WebView
+  source={{ html }}
+  javaScriptEnabled={true}       // Required for Leaflet
+  originWhitelist={['*']}        // Allow all origins (HTML is self-generated)
+  mixedContentMode="compatibility" // Allow HTTP tile loading
+/>
+```
+
+<Warning>
+HTML is sanitized by escaping `<` characters in JSON: `.replace(/</g, '\\u003c')` to prevent XSS attacks.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="AI Agent" icon="robot" href="/features/ai-agent">
+    Learn how alerts are discovered
+  </Card>
+  <Card title="BLE Mesh" icon="bluetooth" href="/features/ble-mesh">
+    Share alerts offline via Bluetooth
+  </Card>
+</CardGroup>

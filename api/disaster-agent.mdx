@@ -1,0 +1,519 @@
+---
+title: 'Disaster Agent'
+description: 'AI-powered autonomous disaster monitoring system'
+---
+
+The Disaster Agent is Sift's core autonomous monitoring system that continuously scans multiple data sources, validates events, and saves significant disasters to the database.
+
+## Architecture
+
+The agent uses **Qwen3-30B-A3B** (via Hack4Help) with function calling to orchestrate data fetching and alert processing.
+
+```python
+# Source: server/app/services/disaster_agent.py
+
+class DisasterAgent:
+    def __init__(self, ws_manager=None):
+        self.ws_manager = ws_manager
+        self._client = OpenAI(
+            api_key=settings.h4h_api_key,
+            base_url=settings.h4h_base_url,
+        )
+```
+
+### How It Works
+
+1. **Scheduled Runs**: The agent runs on a schedule (configured in your deployment)
+2. **Tool Calling**: Uses OpenAI-compatible function calling to fetch data from sources
+3. **Validation**: Applies save criteria to filter significant events
+4. **Deduplication**: Prevents duplicate alerts using geographic proximity
+5. **Storage**: Saves validated alerts to JSON storage
+6. **Broadcasting**: Notifies connected WebSocket clients of new alerts
+
+---
+
+## System Prompt
+
+Location: `disaster_agent.py:182`
+
+The agent follows a strict procedure defined in its system prompt:
+
+```python
+def _build_system_prompt() -> str:
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return f"""You are DisasterAI's autonomous disaster monitoring agent.
+Your job is to find REAL, CURRENT disaster events and save them to our alert database.
+Current UTC time: {now_utc}
+
+PROCEDURE — follow this order every run:
+1. Call fetch_usgs_earthquakes     (always)
+2. Call fetch_noaa_alerts          (always)
+3. Call fetch_nasa_eonet           (always)
+4. Call fetch_gdacs_alerts         (always)
+5. Always call search_web once for recent disaster news
+6. For EACH event that meets SAVE CRITERIA, call save_disaster_alert ONCE
+7. Only AFTER saving all qualifying events, output a brief summary.
+
+SAVE CRITERIA — save ONLY if ALL of these are true:
+  ✓ Event is real (from official API or confirmed news source)
+  ✓ Event is current (occurred within the last 6 hours)
+  ✓ Event is significant (see severity guide)
+  ✓ Not a duplicate
+
+DO NOT SAVE:
+  ✗ Weather advisories (Moderate level is borderline)
+  ✗ Events older than 6 hours
+  ✗ GDACS Green level alerts
+  ✗ Test messages or exercises
+  ✗ Events you've already saved in this run"""
+```
+
+---
+
+## Available Tools
+
+Location: `disaster_agent.py:49`
+
+The agent has access to 6 function tools:
+
+### 1. fetch_usgs_earthquakes
+
+```python
+{
+    "name": "fetch_usgs_earthquakes",
+    "description": "Fetch recent M4.5+ earthquakes from USGS (last 1 hour). Always call this.",
+    "parameters": {}
+}
+```
+
+### 2. fetch_noaa_alerts
+
+```python
+{
+    "name": "fetch_noaa_alerts",
+    "description": "Fetch active Moderate/Severe/Extreme weather alerts from NOAA (US only).",
+    "parameters": {}
+}
+```
+
+### 3. fetch_nasa_eonet
+
+```python
+{
+    "name": "fetch_nasa_eonet",
+    "description": "Fetch open natural events from NASA EONET (wildfires, volcanoes, severe storms — global).",
+    "parameters": {}
+}
+```
+
+### 4. fetch_gdacs_alerts
+
+```python
+{
+    "name": "fetch_gdacs_alerts",
+    "description": "Fetch global Red/Orange disaster alerts from GDACS.",
+    "parameters": {}
+}
+```
+
+### 5. search_web
+
+```python
+{
+    "name": "search_web",
+    "description": "Search the web for recent disaster news NOT covered by official APIs.",
+    "parameters": {
+        "query": {
+            "type": "string",
+            "description": "Web search query, e.g. 'chemical plant explosion Texas today 2025'"
+        }
+    },
+    "required": ["query"]
+}
+```
+
+Limited to 1-2 searches per run to avoid rate limits.
+
+### 6. save_disaster_alert
+
+```python
+{
+    "name": "save_disaster_alert",
+    "description": "Save a validated disaster alert to the database.",
+    "parameters": {
+        "type": {"enum": ["earthquake", "flood", "fire", "storm", "chemical", 
+                          "tsunami", "medical", "infrastructure", "other"]},
+        "severity": {"enum": ["low", "medium", "high", "critical"]},
+        "title": {"description": "Max 80 chars"},
+        "description": {"description": "Max 300 chars"},
+        "city": {"description": "Nearest city or district"},
+        "state": {"description": "State/prefecture/region"},
+        "lat": {"type": "number"},
+        "lng": {"type": "number"},
+        "zipcode": {"description": "US only (optional)"},
+        "data_source": {"enum": ["USGS", "NOAA", "NASA EONET", "GDACS", "Tavily", "news"]}
+    }
+}
+```
+
+---
+
+## Severity Guidelines
+
+Location: `disaster_agent.py:137`
+
+The agent follows these rules when determining severity:
+
+```python
+"""Severity level. Guide:
+Earthquake M4.5-5.0=medium, M5.0-6.0=high, M6.0+=critical
+NOAA Moderate=medium, Severe=high, Extreme=critical
+Hurricane Cat1-2=high, Cat3+=critical
+Flash flood warning=high
+Tsunami warning=critical
+Major wildfire (>1000 acres)=high, out-of-control=critical"""
+```
+
+---
+
+## Deduplication Logic
+
+Location: `disaster_agent.py:479`
+
+### Deduplication Radius
+
+```python
+DEDUP_RADIUS_KM = 50.0
+```
+
+Alerts of the **same type** within 50km and 2 hours are considered duplicates.
+
+**Important:** Different types in the same radius are **both stored** (e.g., earthquake + tsunami at the same location).
+
+### Implementation
+
+```python
+def _is_duplicate(self, alert_type: str, lat: float, lng: float, hours: int = 2) -> bool:
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    for alert in storage.get_all_alerts():
+        # Only check same type
+        if alert.get("type") != alert_type or not alert.get("active", True):
+            continue
+        
+        # Only check recent alerts
+        created = datetime.fromisoformat(alert["created_at"])
+        if created < since:
+            continue
+        
+        # Check distance
+        a_lat = alert.get("lat")
+        a_lng = alert.get("lng")
+        if _distance_km(lat, lng, float(a_lat), float(a_lng)) < DEDUP_RADIUS_KM:
+            return True  # Duplicate found
+    return False
+```
+
+### Distance Calculation
+
+Location: `disaster_agent.py:28`
+
+Uses the Haversine formula for accurate geographic distance:
+
+```python
+def _distance_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Approximate distance in km between two points (Haversine)."""
+    R = 6371.0  # Earth radius km
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+```
+
+---
+
+## Save Criteria
+
+The agent only saves events that meet ALL of these criteria:
+
+<AccordionGroup>
+  <Accordion title="✓ Real Event">
+    Must come from an official API (USGS, NOAA, NASA EONET, GDACS) or confirmed news source (via Tavily search).
+    
+    **Rejected:**
+    - Test messages
+    - Exercises
+    - Unconfirmed social media posts
+  </Accordion>
+
+  <Accordion title="✓ Current (< 6 hours)">
+    Event must have occurred within the last 6 hours.
+    
+    This prevents the database from filling with historical events while still allowing delayed reporting.
+  </Accordion>
+
+  <Accordion title="✓ Significant">
+    Event must meet severity thresholds:
+    
+    - **Earthquakes:** M4.5+ (USGS feed already filters this)
+    - **Weather:** Moderate/Severe/Extreme (NOAA)
+    - **GDACS:** Red or Orange alerts only
+    - **Wildfires:** Major fires (>1000 acres) or out-of-control
+    
+    Minor weather advisories are excluded.
+  </Accordion>
+
+  <Accordion title="✓ Not a Duplicate">
+    Event must not be within 50km of an existing alert of the same type from the last 2 hours.
+    
+    **Note:** Different disaster types at the same location (e.g., earthquake triggering tsunami) are both saved.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Run Procedure
+
+Location: `disaster_agent.py:232`
+
+### Main Loop
+
+```python
+async def run(self) -> dict:
+    # Prevent concurrent runs
+    if agent_status["running"]:
+        return {"status": "skipped", "reason": "already_running"}
+    
+    agent_status.update({
+        "running": True,
+        "last_run": start_time.isoformat(),
+        "sources_checked": [],
+        "alerts_found": 0,
+    })
+    
+    # Initialize conversation with system prompt
+    messages = [
+        {"role": "system", "content": _build_system_prompt()},
+        {"role": "user", "content": "Run the full disaster scan now."}
+    ]
+    
+    # Iterate up to 25 times for tool calling
+    for iteration in range(25):
+        response = client.chat.completions.create(
+            model="Qwen3-30B-A3B",
+            messages=messages,
+            tools=TOOLS,
+            tool_choice="auto",
+            max_tokens=4096,
+            temperature=0.1,
+        )
+        
+        # Execute tool calls
+        for tool_call in response.choices[0].message.tool_calls:
+            result = await self._execute_tool(
+                tool_call.function.name,
+                json.loads(tool_call.function.arguments)
+            )
+            messages.append({"role": "tool", "content": json.dumps(result)})
+        
+        # Exit when no more tool calls
+        if not response.choices[0].message.tool_calls:
+            break
+    
+    return {
+        "alerts_saved": alerts_saved,
+        "sources_checked": agent_status["sources_checked"],
+        "duration_seconds": round(duration, 1),
+    }
+```
+
+### Recovery Logic
+
+Location: `disaster_agent.py:299`
+
+If the agent fetches data but doesn't save any alerts, it gets a second chance:
+
+```python
+if not msg.tool_calls:
+    # Recovery: if we got data but saved nothing, prompt to save
+    if (not recovery_prompt_sent 
+        and len(agent_status["sources_checked"]) > 0 
+        and alerts_saved == 0):
+        recovery_prompt_sent = True
+        messages.append({
+            "role": "user",
+            "content": (
+                "You have not called save_disaster_alert for any qualifying events. "
+                "Call save_disaster_alert for each event that meets SAVE CRITERIA now."
+            )
+        })
+        continue
+```
+
+This prevents the agent from prematurely ending without saving valid events.
+
+---
+
+## WebSocket Broadcasting
+
+Location: `disaster_agent.py:452`
+
+When an alert is saved, it's immediately broadcast to all connected WebSocket clients:
+
+```python
+if self.ws_manager:
+    asyncio.create_task(
+        self.ws_manager.broadcast({
+            "event": "alert:new",
+            "alert": {
+                "id":       alert["id"],
+                "type":     alert["type"],
+                "severity": alert["severity"],
+                "title":    alert["title"],
+                "lat":      alert["lat"],
+                "lng":      alert["lng"],
+                "city":     alert.get("city"),
+                "state":    alert.get("state"),
+                "source":   alert["source"],
+            },
+        })
+    )
+```
+
+This enables real-time map updates on connected clients.
+
+---
+
+## Agent Status
+
+Location: `disaster_agent.py:40`
+
+The agent maintains global status that can be queried via API:
+
+```python
+agent_status: dict = {
+    "last_run":        None,          # ISO timestamp of last run
+    "next_run":        None,          # ISO timestamp of next scheduled run
+    "alerts_found":    0,             # Alerts saved in last run
+    "sources_checked": [],            # List of sources fetched
+    "running":         False,         # Whether agent is currently running
+    "error":           None,          # Last error message (if any)
+}
+```
+
+### API Endpoint
+
+```python
+# GET /api/agent/status
+{
+  "last_run": "2026-03-02T14:30:00Z",
+  "next_run": "2026-03-02T15:00:00Z",
+  "alerts_found": 7,
+  "sources_checked": ["USGS", "NOAA", "NASA EONET", "GDACS", "TAVILY WEB SEARCH"],
+  "running": false,
+  "error": null
+}
+```
+
+---
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# Required for Hack4Help (Qwen3-30B-A3B)
+H4H_API_KEY=your_hack4help_key
+H4H_BASE_URL=https://api.hack4help.ai/v1
+
+# Required for web search
+TAVILY_API_KEY=your_tavily_key
+```
+
+### Model Configuration
+
+Location: `disaster_agent.py:274`
+
+```python
+response = client.chat.completions.create(
+    model="Qwen3-30B-A3B",
+    max_tokens=4096,
+    temperature=0.1,      # Low temperature for consistent behavior
+    tool_choice="auto",   # Let model decide when to call tools
+)
+```
+
+---
+
+## Tool Execution
+
+Location: `disaster_agent.py:367`
+
+```python
+async def _execute_tool(self, tool_name: str, tool_args: dict) -> dict:
+    if tool_name == "fetch_usgs_earthquakes":
+        data = await fetch_usgs_earthquakes()
+        return {"count": len(data), "events": data[:12]}
+    
+    elif tool_name == "fetch_noaa_alerts":
+        data = await fetch_noaa_alerts()
+        return {"count": len(data), "alerts": data[:12]}
+    
+    elif tool_name == "fetch_nasa_eonet":
+        data = await fetch_nasa_eonet()
+        return {"count": len(data), "events": data[:12]}
+    
+    elif tool_name == "fetch_gdacs_alerts":
+        data = await fetch_gdacs_alerts()
+        return {"count": len(data), "alerts": data[:12]}
+    
+    elif tool_name == "search_web":
+        return await self._search_web(tool_args.get("query", ""))
+    
+    elif tool_name == "save_disaster_alert":
+        return await self._save_alert(tool_args)
+```
+
+**Note:** Only the first 12 events from each source are returned to the agent to prevent context overflow.
+
+---
+
+## Logging
+
+The agent produces detailed logs for monitoring:
+
+```python
+============================================================
+[DisasterAgent] 🚨 Disaster scan starting at 14:30 UTC
+============================================================
+[DisasterAgent] ── Iteration 1 ──
+[DisasterAgent] 🔧 fetch_usgs_earthquakes({})
+[data_sources][USGS] 3 earthquake(s) fetched
+[DisasterAgent] 🔧 fetch_noaa_alerts({})
+[data_sources][NOAA] 12 alert(s) fetched
+[DisasterAgent] 🔧 fetch_nasa_eonet({})
+[data_sources][NASA EONET] 5 event(s) fetched
+[DisasterAgent] 🔧 fetch_gdacs_alerts({})
+[data_sources][GDACS] 2 Red/Orange alert(s) fetched
+[DisasterAgent] 🔧 search_web({"query": "major disaster today 2026"})
+[DisasterAgent] 🌐 Web search 'major disaster today 2026' → 4 result(s)
+[DisasterAgent] 🔧 save_disaster_alert({"type": "earthquake", ...})
+[DisasterAgent] ✅ Agent finished — 3 iteration(s)
+[DisasterAgent] 🎯 Run complete — 7 alert(s) saved | 5 source(s) checked | 8.3s
+============================================================
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Sources" icon="database" href="/api/data-sources">
+    Learn about each data source in detail
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/endpoints">
+    Agent status and control endpoints
+  </Card>
+</CardGroup>

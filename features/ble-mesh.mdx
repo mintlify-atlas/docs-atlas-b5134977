@@ -1,0 +1,451 @@
+---
+title: 'BLE Mesh Network'
+description: 'Decentralized alert sharing via Bluetooth Low Energy when internet is unavailable'
+icon: 'bluetooth'
+---
+
+## Overview
+
+Sift's BLE (Bluetooth Low Energy) mesh network enables offline alert sharing between devices. When internet connectivity is lost during a disaster, devices can discover each other via Bluetooth and exchange alerts in a decentralized, peer-to-peer fashion.
+
+<Info>
+The BLE mesh operates independently of the central server. Alerts shared via BLE are stored locally on each device and automatically synced to the server when connectivity is restored.
+</Info>
+
+## Architecture
+
+Each Sift device operates in two BLE roles simultaneously:
+
+<CardGroup cols={2}>
+  <Card title="Central" icon="magnifying-glass">
+    Scans for nearby Sift devices and connects to them to send alerts.
+  </Card>
+  <Card title="Peripheral" icon="tower-broadcast">
+    Advertises its presence so other devices can find and connect to it to receive alerts.
+  </Card>
+</CardGroup>
+
+## BLE Configuration
+
+```javascript
+const BLE_CONFIG = {
+  SERVICE_UUID: '00001234-0000-1000-8000-00805F9B34FB',
+  CHARACTERISTIC_UUID: '00001235-0000-1000-8000-00805F9B34FB',
+  DEVICE_NAME_PREFIX: 'Sift',
+  SCAN_DURATION_MS: 10000,
+};
+```
+
+**Key components**:
+- **Service UUID**: Identifies the Sift BLE service
+- **Characteristic UUID**: Used for reading/writing alert data
+- **Device Name Prefix**: All Sift devices advertise with names starting with "Sift"
+
+## Central Role: Scanning & Sending
+
+The central role is handled by `bluetoothService.js`.
+
+### Requesting Permissions
+
+On Android 12+ (API level 31), BLE requires explicit permissions:
+
+```javascript
+async requestBluetoothPermissions() {
+  if (Platform.OS !== 'android') return true;
+  const apiLevel = Platform.Version;
+  try {
+    if (apiLevel >= 31) {
+      const scan = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        {
+          title: 'Bluetooth Scan',
+          message: 'App needs Bluetooth to discover nearby devices.',
+        }
+      );
+      const connect = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+        {
+          title: 'Bluetooth Connect',
+          message: 'App needs Bluetooth to receive and share alerts.',
+        }
+      );
+      return scan === PermissionsAndroid.RESULTS.GRANTED &&
+             connect === PermissionsAndroid.RESULTS.GRANTED;
+    }
+    // For older Android, request location permission
+    const location = await PermissionsAndroid.request(
+      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+    );
+    return location === PermissionsAndroid.RESULTS.GRANTED;
+  } catch (e) {
+    console.warn('[BluetoothService] requestBluetoothPermissions failed', e);
+    return false;
+  }
+}
+```
+
+**Implementation**: `Client/src/services/bluetoothService.js:23-47`
+
+### Scanning for Devices
+
+Devices scan continuously for nearby Sift devices:
+
+```javascript
+startScanning(onDeviceFound) {
+  this._onDeviceFound = onDeviceFound ?? null;
+  if (this._isScanning) return;
+  this._isScanning = true;
+  this._manager.startDeviceScan(
+    null,  // No service UUID filter (scan all)
+    { allowDuplicates: false },
+    (err, device) => {
+      if (err) {
+        this._isScanning = false;
+        console.warn('[BluetoothService] scan error', err);
+        return;
+      }
+      // Only connect to devices with "Sift" prefix
+      if (device && device.name && device.name.startsWith(DEVICE_NAME_PREFIX)) {
+        this._onDeviceFound?.(device);
+      }
+    }
+  );
+}
+```
+
+**Implementation**: `Client/src/services/bluetoothService.js:53-71`
+
+### Connecting to Peers
+
+When a Sift device is discovered, the central connects to it:
+
+```javascript
+async connectToDevice(device) {
+  // Prevent duplicate connections
+  if (this._connectedDevices.has(device.id)) {
+    return this._connectedDevices.get(device.id).device;
+  }
+  if (this._connectingIds.has(device.id)) return null;
+  
+  this._connectingIds.add(device.id);
+  try {
+    await device.connect({ refreshGatt: 'OnConnected' });
+    await device.requestMTU(512);  // Request larger MTU for bigger payloads
+    const discovered = await device.discoverAllServicesAndCharacteristics();
+    
+    this._connectedDevices.set(device.id, {
+      device: discovered,
+      name: device.name || null
+    });
+    
+    // Listen for disconnection
+    discovered.onDisconnected(() => {
+      this._connectedDevices.delete(device.id);
+    });
+    
+    // Monitor characteristic for incoming alerts
+    if (this._onMessage) {
+      discovered.monitorCharacteristicForService(
+        SERVICE_UUID,
+        CHARACTERISTIC_UUID,
+        (error, characteristic) => {
+          if (error || !characteristic?.value || !this._onMessage) return;
+          try {
+            const decoded = Buffer.from(characteristic.value, 'base64').toString('utf8');
+            const data = JSON.parse(decoded);
+            this._onMessage(data);  // Handle received alert
+          } catch (e) {
+            console.warn('[BluetoothService] monitor parse failed', e?.message);
+          }
+        }
+      );
+    }
+    
+    return discovered;
+  } catch (e) {
+    console.warn('[BluetoothService] connectToDevice failed', e);
+    throw e;
+  } finally {
+    this._connectingIds.delete(device.id);
+  }
+}
+```
+
+**Implementation**: `Client/src/services/bluetoothService.js:98-136`
+
+### Broadcasting Alerts
+
+To share an alert with all connected devices:
+
+```javascript
+async broadcastAlert(alert) {
+  if (this._connectedDevices.size === 0) {
+    console.log('[BluetoothService] no devices connected; alert not sent via BLE');
+    return;
+  }
+  
+  // Encode alert as JSON -> Base64
+  const payload = typeof alert === 'object' ? JSON.stringify(alert) : String(alert);
+  const base64 = this._toBase64(payload);
+  
+  const toRemove = [];
+  for (const [id, { device }] of this._connectedDevices) {
+    try {
+      await device.writeCharacteristicWithoutResponseForService(
+        SERVICE_UUID,
+        CHARACTERISTIC_UUID,
+        base64
+      );
+    } catch (e) {
+      const msg = (e?.message || String(e)).toLowerCase();
+      // If connection is dead, mark for removal
+      if (msg.includes('not connected') || msg.includes('disconnected') ||
+          msg.includes('timed out') || msg.includes('rejected')) {
+        toRemove.push(id);
+      }
+    }
+  }
+  // Clean up dead connections
+  toRemove.forEach((id) => this._connectedDevices.delete(id));
+}
+```
+
+**Implementation**: `Client/src/services/bluetoothService.js:161-190`
+
+<Tip>
+The service uses `writeCharacteristicWithoutResponseForService` for faster writes and better reliability in mesh scenarios where responses may be delayed.
+</Tip>
+
+## Peripheral Role: Advertising & Receiving
+
+The peripheral role is handled by `blePeripheralService.js`.
+
+### Starting Advertisement
+
+Devices advertise themselves so others can discover and connect:
+
+```javascript
+async start(deviceName, onAlertReceived) {
+  if (this._peripheral) {
+    console.log('[BlePeripheralService] already running');
+    return;
+  }
+  
+  const ok = await this.requestAdvertisePermission();
+  if (!ok) {
+    console.warn('[BlePeripheralService] BLUETOOTH_ADVERTISE not granted');
+    return;
+  }
+  
+  this._onAlertReceived = onAlertReceived;
+  const name = (deviceName || DEVICE_NAME_PREFIX).substring(0, 29);
+  Peripheral.setDeviceName(name);
+  
+  this._peripheral = new Peripheral();
+  
+  // Wait for peripheral to be ready
+  await new Promise((resolve, reject) => {
+    this._peripheral.on('ready', async () => {
+      try {
+        await this._peripheral.addService(SERVICE_UUID, true);
+        await this._peripheral.addCharacteristic(
+          SERVICE_UUID,
+          CHARACTERISTIC_UUID,
+          Property.READ | Property.WRITE | Property.WRITE_NO_RESPONSE,
+          Permission.READABLE | Permission.WRITEABLE
+        );
+        await this._peripheral.startAdvertising();
+        this._advertising = true;
+        console.log('[BlePeripheralService] advertising as', name);
+        resolve();
+      } catch (e) {
+        console.warn('[BlePeripheralService] startAdvertising failed', e?.message);
+        reject(e);
+      }
+    });
+  });
+}
+```
+
+**Implementation**: `Client/src/services/blePeripheralService.js:55-131`
+
+### Receiving Alerts
+
+When a peer writes to the characteristic, the peripheral receives the alert:
+
+```javascript
+// Listen to native write events
+if (nativeBleEvents) {
+  this._nativeWriteSub = nativeBleEvents.addListener(
+    'onWrite',
+    ({ characteristic, value }) => {
+      const charMatch =
+        characteristic === CHARACTERISTIC_UUID ||
+        (typeof characteristic === 'string' &&
+          characteristic.toLowerCase() === CHARACTERISTIC_UUID.toLowerCase());
+      if (!charMatch || !this._onAlertReceived) return;
+      
+      try {
+        const data = this._parseWriteValue(value);
+        if (data) {
+          console.log('[BlePeripheralService] write received', data._type || '(alert)');
+          this._onAlertReceived(data);  // Forward to app
+        }
+      } catch (e) {
+        console.warn('[BlePeripheralService] write parse failed', e?.message);
+      }
+    },
+  );
+}
+```
+
+**Implementation**: `Client/src/services/blePeripheralService.js:77-102`
+
+<Warning>
+The library `react-native-multi-ble-peripheral` has a type-mismatch bug in its JS wrapper. We listen to the native `onWrite` event directly to bypass this issue.
+</Warning>
+
+### Parsing Write Values
+
+Alerts can be received in various formats (JSON string, Base64, byte array). The parser handles all cases:
+
+```javascript
+_parseWriteValue(value) {
+  if (!value) return null;
+  
+  let jsonStr = null;
+  
+  if (typeof value === 'string') {
+    // Raw JSON or Base64-encoded JSON
+    if (value.startsWith('{') || value.startsWith('[')) {
+      jsonStr = value;
+    } else {
+      try {
+        jsonStr = Buffer.from(value, 'base64').toString('utf8');
+      } catch {
+        jsonStr = value;
+      }
+    }
+  } else if (value instanceof ArrayBuffer) {
+    jsonStr = Buffer.from(new Uint8Array(value)).toString('utf8');
+  } else if (ArrayBuffer.isView(value)) {
+    jsonStr = Buffer.from(value).toString('utf8');
+  } else if (Array.isArray(value)) {
+    // Byte array: [123, 34, 95, ...] → string
+    jsonStr = String.fromCharCode(...value);
+  }
+  
+  if (!jsonStr) return null;
+  
+  try {
+    return JSON.parse(jsonStr);
+  } catch {
+    // Try double-base64 decode
+    try {
+      const retry = Buffer.from(jsonStr, 'base64').toString('utf8');
+      return JSON.parse(retry);
+    } catch {
+      return null;
+    }
+  }
+}
+```
+
+**Implementation**: `Client/src/services/blePeripheralService.js:138-185`
+
+## Alert Propagation Flow
+
+<Steps>
+  <Step title="Device A discovers new alert">
+    From server WebSocket or user input.
+  </Step>
+  <Step title="Device A broadcasts via BLE">
+    Writes alert JSON (Base64-encoded) to all connected peers' characteristics.
+  </Step>
+  <Step title="Device B receives alert">
+    Peripheral service parses the write and triggers `onAlertReceived` callback.
+  </Step>
+  <Step title="Device B stores alert locally">
+    Saves to local storage and displays to user.
+  </Step>
+  <Step title="Device B rebroadcasts">
+    If alert is new, Device B broadcasts to its connected peers, creating a mesh effect.
+  </Step>
+</Steps>
+
+<Info>
+Alerts include timestamps and IDs to prevent infinite loops. Each device tracks which alerts it has already seen and does not rebroadcast duplicates.
+</Info>
+
+## Mesh Topology
+
+The BLE mesh is **decentralized** and **self-healing**:
+
+```
+Device A ←→ Device B ←→ Device C
+    ↓                      ↓
+Device D ←→ Device E ←→ Device F
+```
+
+- Each device can connect to multiple peers (limited by BLE hardware)
+- Alerts propagate through the network in all directions
+- No single point of failure: if one device goes offline, the mesh routes around it
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Scan Restart" icon="rotate">
+    Bluetooth scans can stop unexpectedly. The service includes a restart mechanism:
+    
+    ```javascript
+    restartScanning() {
+      if (!this._onDeviceFound) return;
+      if (this._restartTimeoutId) return;
+      this.stopScanning();
+      this._restartTimeoutId = setTimeout(() => {
+        this._restartTimeoutId = null;
+        this.startScanning(this._onDeviceFound);
+      }, 1500);
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="MTU Negotiation" icon="arrows-left-right">
+    Request a larger MTU (Maximum Transmission Unit) for bigger payloads:
+    
+    ```javascript
+    await device.requestMTU(512);  // Default is 23 bytes
+    ```
+    
+    This allows alerts with longer descriptions to be sent in a single packet.
+  </Accordion>
+  
+  <Accordion title="Connection Cleanup" icon="broom">
+    Automatically remove dead connections during broadcast:
+    
+    ```javascript
+    const toRemove = [];
+    for (const [id, { device }] of this._connectedDevices) {
+      try {
+        await device.writeCharacteristicWithoutResponseForService(...);
+      } catch (e) {
+        if (e.message.includes('not connected')) {
+          toRemove.push(id);
+        }
+      }
+    }
+    toRemove.forEach((id) => this._connectedDevices.delete(id));
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Map View" icon="map" href="/features/map-view">
+    Visualize alerts on an interactive map
+  </Card>
+  <Card title="API Reference" icon="code" href="/api-reference/introduction">
+    Explore the REST API
+  </Card>
+</CardGroup>

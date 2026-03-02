@@ -1,0 +1,380 @@
+---
+title: 'WebSocket Connection'
+description: 'Real-time disaster alerts via WebSocket'
+icon: 'bolt'
+---
+
+## Overview
+
+The Sift WebSocket endpoint provides real-time push notifications for disaster alerts. Once connected, the server sends alerts to clients as they occur. This is a **receive-only** connection from the client's perspective.
+
+## Connection Details
+
+### Endpoint
+
+```
+wss://api.example.com/ws
+```
+
+<Note>
+The protocol is `wss://` for HTTPS servers and `ws://` for HTTP servers. The protocol is automatically determined based on your server URL.
+</Note>
+
+### Query Parameters
+
+<ParamField query="deviceId" type="string" optional>
+  Device identifier for this connection. When provided:
+  - Allows the server to track device connection status
+  - Ensures only one connection per device (new connections replace old ones)
+  - Links WebSocket connection to device registration
+</ParamField>
+
+### Connection URL Format
+
+```
+wss://<host>/ws?deviceId=<device-id>
+```
+
+## Connection Lifecycle
+
+### 1. Connect
+
+Clients open a WebSocket connection with an optional `deviceId` query parameter.
+
+**Example (JavaScript)**
+
+```javascript
+const deviceId = "my-device-123";
+const wsUrl = `wss://api.example.com/ws?deviceId=${encodeURIComponent(deviceId)}`;
+const socket = new WebSocket(wsUrl);
+```
+
+### 2. Connection Established
+
+When the connection opens, the server:
+- Accepts the WebSocket connection
+- Stores the device connection status (if `deviceId` provided)
+- Closes any existing connection for the same device
+- Logs the connection
+
+**Example (JavaScript)**
+
+```javascript
+socket.onopen = () => {
+  console.log('Connected to Sift WebSocket');
+};
+```
+
+### 3. Receive Alerts
+
+The server sends alerts as JSON messages. Clients receive these messages via the `onmessage` event.
+
+**Example (JavaScript)**
+
+```javascript
+socket.onmessage = (event) => {
+  const payload = JSON.parse(event.data);
+  const alert = payload.alert || payload.data || payload;
+  console.log('Received alert:', alert);
+};
+```
+
+### 4. Disconnect
+
+When the connection closes:
+- The server removes the connection from active connections
+- Device status is updated to disconnected (if `deviceId` was provided)
+- Clients can implement automatic reconnection logic
+
+**Example (JavaScript)**
+
+```javascript
+socket.onclose = () => {
+  console.log('Disconnected from Sift WebSocket');
+  // Implement reconnection logic
+  setTimeout(() => reconnect(), 5000);
+};
+```
+
+## Message Format
+
+All messages from the server are JSON-formatted alert objects.
+
+### Event Types
+
+The server may send messages with an `event` field to identify the message type:
+
+<ParamField path="event" type="string">
+  - `alert` - New alert notification
+  - `alert:new` - Alias for new alert notification
+</ParamField>
+
+### Message Structure
+
+**Format 1: Event Wrapper**
+
+```json
+{
+  "event": "alert",
+  "alert": {
+    "id": "alert-123",
+    "type": "earthquake",
+    "severity": "critical",
+    "title": "M6.4 Earthquake Strikes Near Jaipur",
+    "lat": 26.9124,
+    "lng": 75.7873,
+    "created_at": "2026-03-02T10:30:00Z"
+  }
+}
+```
+
+**Format 2: Direct Alert Object**
+
+```json
+{
+  "id": "alert-456",
+  "type": "flood",
+  "severity": "high",
+  "title": "Severe Flash Flooding in Mumbai Suburbs",
+  "lat": 19.0760,
+  "lng": 72.8777,
+  "created_at": "2026-03-02T11:15:00Z"
+}
+```
+
+### Alert Fields
+
+All fields match the alert schema documented in [REST API Endpoints](/api/endpoints#get-alerts).
+
+<ResponseField name="id" type="string" required>
+  Unique alert identifier
+</ResponseField>
+
+<ResponseField name="type" type="string" required>
+  Alert type: `earthquake`, `flood`, `fire`, `storm`, `chemical`, `tsunami`, `medical`, `infrastructure`, `other`
+</ResponseField>
+
+<ResponseField name="severity" type="string" required>
+  Severity level: `low`, `medium`, `high`, `critical`
+</ResponseField>
+
+<ResponseField name="title" type="string" required>
+  Alert title
+</ResponseField>
+
+<ResponseField name="description" type="string" optional>
+  Detailed description
+</ResponseField>
+
+<ResponseField name="lat" type="float" required>
+  Latitude (-90 to 90)
+</ResponseField>
+
+<ResponseField name="lng" type="float" required>
+  Longitude (-180 to 180)
+</ResponseField>
+
+<ResponseField name="city" type="string" optional>
+  City name
+</ResponseField>
+
+<ResponseField name="state" type="string" optional>
+  State/province name
+</ResponseField>
+
+<ResponseField name="country" type="string" optional>
+  Country name
+</ResponseField>
+
+<ResponseField name="source" type="string" required>
+  Alert source (e.g., "demo", "usgs", "noaa")
+</ResponseField>
+
+<ResponseField name="created_at" type="datetime" required>
+  ISO 8601 timestamp
+</ResponseField>
+
+<ResponseField name="active" type="boolean" required>
+  Whether alert is active
+</ResponseField>
+
+## Connection Management
+
+### One Connection Per Device
+
+The server enforces a single connection per device ID:
+- When a device connects with a `deviceId` that already has an active connection
+- The server closes the old connection before accepting the new one
+- This prevents duplicate connections and ensures clean state
+
+### Automatic Reconnection
+
+Clients should implement reconnection logic to handle network interruptions.
+
+**Example (JavaScript)**
+
+```javascript
+class WebSocketService {
+  constructor() {
+    this.reconnectDelay = 5000; // 5 seconds
+    this.intentionalClose = false;
+  }
+
+  connect(serverUrl, deviceId) {
+    const wsUrl = `${serverUrl}/ws?deviceId=${encodeURIComponent(deviceId)}`;
+    this.socket = new WebSocket(wsUrl);
+
+    this.socket.onopen = () => {
+      console.log('WebSocket connected');
+    };
+
+    this.socket.onmessage = (event) => {
+      const alert = JSON.parse(event.data);
+      this.handleAlert(alert);
+    };
+
+    this.socket.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+
+    this.socket.onclose = () => {
+      console.log('WebSocket disconnected');
+      if (!this.intentionalClose) {
+        setTimeout(() => this.connect(serverUrl, deviceId), this.reconnectDelay);
+      }
+    };
+  }
+
+  disconnect() {
+    this.intentionalClose = true;
+    if (this.socket) {
+      this.socket.close();
+    }
+  }
+
+  handleAlert(alert) {
+    console.log('Received alert:', alert);
+    // Process alert (show notification, update UI, etc.)
+  }
+}
+```
+
+## Client Implementation
+
+The Sift mobile client provides a complete WebSocket service implementation at:
+
+```
+Client/src/services/websocketService.js
+```
+
+### Key Features
+
+- **Automatic reconnection** with configurable delay
+- **Single connection per device** enforcement
+- **Protocol detection** (ws:// vs wss:// based on server URL)
+- **Connection state callbacks** for UI updates
+- **Alert message parsing** with multiple format support
+
+### Usage Example
+
+```javascript
+import { websocketService } from './services/websocketService';
+
+// Set up alert handler
+websocketService.setOnAlert((alert) => {
+  console.log('New alert:', alert);
+  // Show notification, update UI, etc.
+});
+
+// Set up connection state handler
+websocketService.setOnConnectionChange((isConnected) => {
+  console.log('Connection state:', isConnected ? 'connected' : 'disconnected');
+});
+
+// Connect to server
+websocketService.connect('https://api.example.com', 'my-device-123');
+
+// Later: disconnect
+websocketService.disconnect();
+```
+
+## Configuration
+
+From `Client/src/config/constants.js`:
+
+```javascript
+export const WEBSOCKET_CONFIG = {
+  PATH: '/ws',
+  RECONNECT_DELAY_MS: 5000,
+};
+```
+
+## Error Handling
+
+### Connection Errors
+
+If the WebSocket connection fails:
+- The `onerror` event is triggered
+- The connection closes automatically
+- Clients should implement reconnection logic
+
+### Message Parse Errors
+
+If a message cannot be parsed:
+- Log the error (don't crash the client)
+- Continue listening for subsequent messages
+
+**Example**
+
+```javascript
+socket.onmessage = (event) => {
+  try {
+    const data = JSON.parse(event.data);
+    handleAlert(data);
+  } catch (error) {
+    console.warn('Failed to parse WebSocket message:', error);
+  }
+};
+```
+
+## Best Practices
+
+1. **Always include deviceId**: This enables proper connection tracking and ensures only one connection per device
+
+2. **Implement reconnection logic**: Network interruptions are common on mobile devices
+
+3. **Handle multiple message formats**: The server may send alerts in different wrapper formats
+
+4. **Validate alert data**: Always check for required fields (`id`, `type`, `severity`, `lat`, `lng`) before processing
+
+5. **Clean disconnection**: Set `intentionalClose = true` before calling `socket.close()` to prevent unwanted reconnection
+
+6. **Monitor connection state**: Update UI to reflect connection status
+
+## Testing
+
+You can test the WebSocket connection using various tools:
+
+### wscat (Command Line)
+
+```bash
+npm install -g wscat
+wscat -c "wss://api.example.com/ws?deviceId=test-device"
+```
+
+### Browser Console
+
+```javascript
+const ws = new WebSocket('wss://api.example.com/ws?deviceId=test-123');
+ws.onmessage = (e) => console.log(JSON.parse(e.data));
+```
+
+### Trigger Demo Alert
+
+After connecting, trigger a demo alert to test the WebSocket:
+
+```bash
+curl -X POST https://api.example.com/alerts/demo
+```
+
+You should receive the alert via the WebSocket connection within seconds.

@@ -1,0 +1,352 @@
+---
+title: 'REST API Endpoints'
+description: 'Complete reference for all Sift REST API endpoints'
+icon: 'list'
+---
+
+## Health Check
+
+### GET /health
+
+Check API server health and version.
+
+**Response**
+
+<ResponseField name="status" type="string">
+  Server status (always "ok" if responding)
+</ResponseField>
+
+<ResponseField name="version" type="string">
+  API version number
+</ResponseField>
+
+**Example Request**
+
+```bash
+curl https://api.example.com/health
+```
+
+**Example Response**
+
+```json
+{
+  "status": "ok",
+  "version": "1.0.0"
+}
+```
+
+---
+
+## Device Registration
+
+### POST /api/register
+
+Register a device with the server to receive alerts. The server stores the device ID and connection details.
+
+**Request Body**
+
+<ParamField body="deviceId" type="string" optional>
+  Optional device identifier. If not provided, a UUID will be generated.
+</ParamField>
+
+**Response**
+
+<ResponseField name="user_id" type="string">
+  The registered device ID (either provided or generated)
+</ResponseField>
+
+**Example Request**
+
+```bash
+curl -X POST https://api.example.com/api/register \
+  -H "Content-Type: application/json" \
+  -d '{"deviceId": "my-device-123"}'
+```
+
+**Example Response**
+
+```json
+{
+  "user_id": "my-device-123"
+}
+```
+
+---
+
+## Alerts
+
+### GET /alerts
+
+Retrieve a list of active disaster alerts with optional filtering.
+
+**Query Parameters**
+
+<ParamField query="type" type="string" optional>
+  Filter by alert type. Options: `earthquake`, `flood`, `fire`, `storm`, `chemical`, `tsunami`, `medical`, `infrastructure`, `other`
+</ParamField>
+
+<ParamField query="severity" type="string" optional>
+  Filter by severity level. Options: `low`, `medium`, `high`, `critical`
+</ParamField>
+
+<ParamField query="limit" type="integer" default="50" optional>
+  Maximum number of alerts to return. Maximum value: 200
+</ParamField>
+
+<ParamField query="hours" type="integer" optional>
+  Filter alerts from the last N hours. Range: 1-168 (1 week)
+</ParamField>
+
+**Response**
+
+Returns an array of alert objects, sorted by creation date (newest first).
+
+<ResponseField name="id" type="string">
+  Unique alert identifier
+</ResponseField>
+
+<ResponseField name="type" type="string">
+  Alert type (earthquake, flood, fire, etc.)
+</ResponseField>
+
+<ResponseField name="severity" type="string">
+  Severity level (low, medium, high, critical)
+</ResponseField>
+
+<ResponseField name="title" type="string">
+  Alert title (3-200 characters)
+</ResponseField>
+
+<ResponseField name="description" type="string" optional>
+  Detailed alert description
+</ResponseField>
+
+<ResponseField name="city" type="string" optional>
+  City name
+</ResponseField>
+
+<ResponseField name="state" type="string" optional>
+  State/province name
+</ResponseField>
+
+<ResponseField name="country" type="string" optional>
+  Country name
+</ResponseField>
+
+<ResponseField name="zipcode" type="string" optional>
+  ZIP/postal code
+</ResponseField>
+
+<ResponseField name="lat" type="float">
+  Latitude (-90 to 90)
+</ResponseField>
+
+<ResponseField name="lng" type="float">
+  Longitude (-180 to 180)
+</ResponseField>
+
+<ResponseField name="source" type="string">
+  Alert source (e.g., "demo", "usgs", "noaa", "nasa", "gdacs")
+</ResponseField>
+
+<ResponseField name="relayed_by" type="string" optional>
+  Device ID that relayed this alert (for BLE mesh)
+</ResponseField>
+
+<ResponseField name="hop_count" type="integer" optional>
+  Number of hops in BLE mesh network
+</ResponseField>
+
+<ResponseField name="created_at" type="datetime">
+  ISO 8601 timestamp when alert was created
+</ResponseField>
+
+<ResponseField name="updated_at" type="datetime">
+  ISO 8601 timestamp when alert was last updated
+</ResponseField>
+
+<ResponseField name="active" type="boolean">
+  Whether the alert is currently active
+</ResponseField>
+
+<ResponseField name="distance_km" type="float" optional>
+  Distance from user's location in kilometers (if location provided)
+</ResponseField>
+
+**Example Request**
+
+```bash
+# Get all critical alerts from the last 24 hours
+curl "https://api.example.com/alerts?severity=critical&hours=24&limit=50"
+```
+
+**Example Response**
+
+```json
+[
+  {
+    "id": "alert-123",
+    "type": "earthquake",
+    "severity": "critical",
+    "title": "M6.4 Earthquake Strikes Near Jaipur",
+    "description": "A magnitude 6.4 earthquake hit 40 km north of Jaipur at 03:22 IST. Several buildings collapsed in Chomu district. Search and rescue operations underway.",
+    "city": "Jaipur",
+    "state": "Rajasthan",
+    "country": "India",
+    "zipcode": null,
+    "lat": 26.9124,
+    "lng": 75.7873,
+    "source": "usgs",
+    "relayed_by": null,
+    "hop_count": null,
+    "created_at": "2026-03-02T10:30:00Z",
+    "updated_at": "2026-03-02T10:30:00Z",
+    "active": true,
+    "distance_km": null
+  }
+]
+```
+
+---
+
+### POST /alerts/demo
+
+Create a random demo alert for testing and hackathon purposes.
+
+**Response**
+
+Returns a single alert object with the same schema as GET /alerts.
+
+**Example Request**
+
+```bash
+curl -X POST https://api.example.com/alerts/demo
+```
+
+**Example Response**
+
+```json
+{
+  "id": "demo-456",
+  "type": "flood",
+  "severity": "high",
+  "title": "Severe Flash Flooding in Mumbai Suburbs",
+  "description": "Heavy monsoon rains have caused severe flash flooding across Andheri, Kurla, and Sion. Water levels at 4–6 feet in low-lying streets. NDRF teams deployed.",
+  "city": "Mumbai",
+  "state": "Maharashtra",
+  "country": "India",
+  "lat": 19.0760,
+  "lng": 72.8777,
+  "source": "demo",
+  "relayed_by": null,
+  "hop_count": null,
+  "created_at": "2026-03-02T11:15:00Z",
+  "updated_at": "2026-03-02T11:15:00Z",
+  "active": true,
+  "distance_km": null
+}
+```
+
+---
+
+## Disaster Agent
+
+The autonomous disaster discovery agent scans USGS, NOAA, NASA EONET, and GDACS for new disasters.
+
+### GET /alerts/agent/status
+
+Get the current status of the disaster agent.
+
+**Response**
+
+<ResponseField name="running" type="boolean">
+  Whether the agent is currently scanning
+</ResponseField>
+
+<ResponseField name="next_run" type="string">
+  ISO 8601 timestamp of next scheduled run
+</ResponseField>
+
+<ResponseField name="last_run" type="string" optional>
+  ISO 8601 timestamp of last completed run
+</ResponseField>
+
+**Example Request**
+
+```bash
+curl https://api.example.com/alerts/agent/status
+```
+
+**Example Response**
+
+```json
+{
+  "running": false,
+  "next_run": "2026-03-02T12:00:00Z",
+  "last_run": "2026-03-02T11:00:00Z"
+}
+```
+
+---
+
+### POST /alerts/agent/run
+
+Manually trigger a disaster agent scan (runs in background).
+
+**Response**
+
+<ResponseField name="status" type="string">
+  Status of the trigger request: `triggered` or `already_running`
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable status message
+</ResponseField>
+
+**Example Request**
+
+```bash
+curl -X POST https://api.example.com/alerts/agent/run
+```
+
+**Example Response (Success)**
+
+```json
+{
+  "status": "triggered",
+  "message": "Agent scanning USGS, NOAA, NASA EONET, GDACS. Check /alerts/agent/status for progress."
+}
+```
+
+**Example Response (Already Running)**
+
+```json
+{
+  "status": "already_running",
+  "message": "Agent is currently scanning."
+}
+```
+
+---
+
+## Error Responses
+
+### 400 Bad Request
+
+Returned when request parameters are invalid.
+
+```json
+{
+  "detail": "Invalid query parameter: hours must be between 1 and 168"
+}
+```
+
+### 503 Service Unavailable
+
+Returned when the service is temporarily unavailable.
+
+```json
+{
+  "detail": "Agent not initialized."
+}
+```

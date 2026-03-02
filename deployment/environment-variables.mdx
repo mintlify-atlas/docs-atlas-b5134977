@@ -1,0 +1,418 @@
+---
+title: Environment Variables
+description: Configure Sift server with environment variables for API keys, agent settings, and more
+---
+
+# Environment Variables
+
+Sift uses environment variables to configure the backend server, including API keys for external services, agent scheduling, and server settings.
+
+## Configuration File
+
+Environment variables are loaded from a `.env` file in the `server/` directory. This file is **not** included in the repository for security reasons.
+
+### Create .env File
+
+Create `server/.env`:
+
+```bash
+cd server
+touch .env
+chmod 600 .env  # Restrict permissions
+```
+
+Edit with your preferred editor:
+
+```bash
+nano .env
+```
+
+<Warning>
+Never commit `.env` files to version control. The `.env` file contains sensitive API keys and should be kept secure.
+</Warning>
+
+## Available Variables
+
+All environment variables are defined in `server/app/config.py`:19.
+
+### PORT
+
+- **Type**: Integer
+- **Default**: `8000`
+- **Description**: Port number for the uvicorn server
+
+```bash
+PORT=8001
+```
+
+<Note>
+If running uvicorn directly with the `--port` flag, that value takes precedence over this environment variable. This variable is primarily used by the `run.sh` script.
+</Note>
+
+### H4H_API_KEY
+
+- **Type**: String
+- **Default**: `"h4h-sift"`
+- **Description**: API key for the H4H (Hack4Hope) LLM service
+- **Required**: Yes (for AI agent functionality)
+
+The disaster agent uses H4H's Qwen3-30B-A3B model for autonomous disaster monitoring.
+
+```bash
+H4H_API_KEY=your-h4h-api-key-here
+```
+
+<Warning>
+The default value `"h4h-sift"` is a placeholder. Replace it with your actual API key obtained from the H4H service.
+</Warning>
+
+**How to obtain**:
+- Contact the H4H team or service provider
+- The key is used in `server/app/services/disaster_agent.py`:226 to initialize the OpenAI client
+
+### H4H_BASE_URL
+
+- **Type**: String (URL)
+- **Default**: `"http://165.245.139.104:443/v1"`
+- **Description**: Base URL for the H4H API endpoint
+- **Required**: Yes (for AI agent functionality)
+
+```bash
+H4H_BASE_URL=http://165.245.139.104:443/v1
+```
+
+This URL points to the H4H server hosting the Qwen3-30B-A3B model used by the disaster monitoring agent.
+
+<Note>
+Only change this value if you're using a different H4H endpoint or self-hosted model server.
+</Note>
+
+### TAVILY_API_KEY
+
+- **Type**: String
+- **Default**: `""` (empty string)
+- **Description**: API key for Tavily web search service
+- **Required**: Optional (but recommended for comprehensive disaster monitoring)
+
+```bash
+TAVILY_API_KEY=tvly-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+The disaster agent uses Tavily to search for recent disaster news from trusted sources (Reuters, AP News, BBC, NOAA, USGS, etc.) that may not be covered by official APIs.
+
+**How to obtain**:
+1. Sign up at [tavily.com](https://tavily.com)
+2. Navigate to your API dashboard
+3. Copy your API key
+
+**What happens without it**:
+- The agent will skip web search functionality
+- You'll see log messages: `"TAVILY_API_KEY not set"`
+- The agent will still check USGS, NOAA, NASA EONET, and GDACS
+
+**Used in**: `server/app/services/disaster_agent.py`:391-423
+
+### AGENT_INTERVAL_MINUTES
+
+- **Type**: Integer
+- **Default**: `20`
+- **Description**: How often (in minutes) the disaster monitoring agent runs
+- **Required**: No
+
+```bash
+AGENT_INTERVAL_MINUTES=20
+```
+
+The agent checks all disaster data sources on this schedule:
+- USGS Earthquakes (M4.5+)
+- NOAA Weather Alerts (Moderate/Severe/Extreme)
+- NASA EONET (Wildfires, volcanoes, storms)
+- GDACS (Global Red/Orange alerts)
+- Tavily Web Search (recent disaster news)
+
+**Recommendations**:
+- **Development**: 5-10 minutes for faster testing
+- **Production**: 15-30 minutes to balance freshness and API rate limits
+- **Low traffic**: 60+ minutes to reduce server load
+
+<Note>
+The first agent run starts immediately when the server launches. Subsequent runs occur at the specified interval.
+</Note>
+
+**Configured in**: `server/app/main.py`:71-89
+
+## Example Configuration
+
+### Minimal Configuration
+
+Minimum required for basic functionality:
+
+```bash
+# server/.env
+PORT=8000
+H4H_API_KEY=h4h-your-actual-key
+H4H_BASE_URL=http://165.245.139.104:443/v1
+AGENT_INTERVAL_MINUTES=20
+```
+
+### Full Production Configuration
+
+Recommended for production deployments:
+
+```bash
+# server/.env
+
+# Server Configuration
+PORT=8001
+
+# H4H LLM Service (Required)
+H4H_API_KEY=h4h-prod-key-xxxxxxxxx
+H4H_BASE_URL=http://165.245.139.104:443/v1
+
+# Tavily Web Search (Recommended)
+TAVILY_API_KEY=tvly-xxxxxxxxxxxxxxxxxx
+
+# Agent Scheduling
+AGENT_INTERVAL_MINUTES=15
+```
+
+### Development Configuration
+
+Faster iteration for development:
+
+```bash
+# server/.env
+
+# Server Configuration
+PORT=8000
+
+# H4H LLM Service
+H4H_API_KEY=h4h-dev-key-xxxxxxxxx
+H4H_BASE_URL=http://165.245.139.104:443/v1
+
+# Tavily Web Search (Optional in dev)
+TAVILY_API_KEY=
+
+# Agent Scheduling - faster for testing
+AGENT_INTERVAL_MINUTES=5
+```
+
+## Loading Configuration
+
+The configuration is loaded using Pydantic Settings in `server/app/config.py`:
+
+```python
+from pydantic_settings import BaseSettings
+from functools import lru_cache
+
+class Settings(BaseSettings):
+    port: int = 8000
+    h4h_api_key: str = "h4h-sift"
+    h4h_base_url: str = "http://165.245.139.104:443/v1"
+    tavily_api_key: str = ""
+    agent_interval_minutes: int = 20
+
+    class Config:
+        env_file = ".env"
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+```
+
+The `@lru_cache` decorator ensures settings are loaded only once and cached for the application lifetime.
+
+## Security Best Practices
+
+### 1. Never Commit .env Files
+
+Add to `.gitignore`:
+
+```bash
+echo ".env" >> .gitignore
+echo "server/.env" >> .gitignore
+```
+
+Verify it's ignored:
+
+```bash
+git status
+```
+
+### 2. Restrict File Permissions
+
+```bash
+chmod 600 server/.env
+```
+
+This ensures only the file owner can read/write the file.
+
+### 3. Use Different Keys for Environments
+
+<Warning>
+Never use production API keys in development or vice versa. Use separate keys for each environment.
+</Warning>
+
+- **Development**: Use test/sandbox API keys with rate limits
+- **Production**: Use production keys with appropriate quotas
+
+### 4. Rotate Keys Regularly
+
+Rotate API keys periodically (every 90 days recommended):
+
+1. Generate new API key in the service dashboard
+2. Update `.env` file
+3. Restart the server
+4. Revoke old key after confirming new one works
+
+### 5. Use Secret Management in Production
+
+For production deployments, consider using:
+
+- **AWS Secrets Manager**
+- **Google Cloud Secret Manager**
+- **Azure Key Vault**
+- **HashiCorp Vault**
+- **Docker Secrets** (for containerized deployments)
+
+Example with AWS Secrets Manager:
+
+```python
+import boto3
+import json
+
+def get_secret():
+    client = boto3.client('secretsmanager')
+    response = client.get_secret_value(SecretId='sift/prod/config')
+    return json.loads(response['SecretString'])
+```
+
+### 6. Audit Access
+
+Regularly review who has access to:
+- The server where `.env` is stored
+- The repository (ensure `.env` is in `.gitignore`)
+- The API dashboards for H4H and Tavily
+
+## Verifying Configuration
+
+Check if your configuration is loaded correctly:
+
+### 1. Server Logs
+
+Start the server and check startup logs:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+You should see:
+
+```
+[DisasterAgent] H4H client initialized (Qwen3-30B-A3B)
+⏰ Disaster agent scheduler started — runs every 20 min
+```
+
+### 2. Health Endpoint
+
+Check the server is running:
+
+```bash
+curl http://localhost:8000/health
+```
+
+Response:
+
+```json
+{
+  "status": "ok",
+  "version": "1.0.0"
+}
+```
+
+### 3. Test Agent Manually
+
+The agent runs immediately on server start. Check logs for:
+
+```
+[DisasterAgent] 🚨 Disaster scan starting at HH:MM UTC
+[DisasterAgent] 🔧 fetch_usgs_earthquakes({})
+[DisasterAgent] 🔧 fetch_noaa_alerts({})
+[DisasterAgent] 🔧 fetch_nasa_eonet({})
+[DisasterAgent] 🔧 fetch_gdacs_alerts({})
+```
+
+If Tavily is configured:
+
+```
+[DisasterAgent] 🌐 Web search 'query' → N result(s)
+```
+
+If Tavily is **not** configured, you'll see:
+
+```
+{"error": "TAVILY_API_KEY not set", "results": []}
+```
+
+## Troubleshooting
+
+### .env File Not Loaded
+
+**Symptoms**: Default values are used instead of your `.env` values
+
+**Solution**:
+1. Verify `.env` is in the `server/` directory (same level as `app/`)
+2. Check file permissions: `ls -la server/.env`
+3. Ensure no syntax errors (no spaces around `=`)
+4. Restart the server
+
+### H4H Client Fails to Initialize
+
+**Symptoms**:
+```
+[DisasterAgent] Run error: ...
+agent_status["error"] = "H4H client failed to initialize"
+```
+
+**Solution**:
+1. Verify `H4H_API_KEY` is set correctly
+2. Check `H4H_BASE_URL` is reachable:
+   ```bash
+   curl http://165.245.139.104:443/v1/health
+   ```
+3. Confirm your API key is valid (contact H4H support)
+
+### Tavily Search Errors
+
+**Symptoms**:
+```
+[DisasterAgent] Web search error: ...
+```
+
+**Solution**:
+1. Verify API key format: starts with `tvly-`
+2. Check Tavily service status
+3. Verify your API quota hasn't been exceeded
+4. Test manually:
+   ```python
+   from tavily import TavilyClient
+   client = TavilyClient(api_key="your-key")
+   result = client.search("test query")
+   print(result)
+   ```
+
+### Agent Not Running at Expected Interval
+
+**Symptoms**: Agent runs immediately but not at the configured interval
+
+**Solution**:
+1. Check logs for scheduler messages
+2. Verify `AGENT_INTERVAL_MINUTES` is set (default: 20)
+3. Ensure the server stays running (not crashing between runs)
+4. Check server timezone matches UTC expectations
+
+## Next Steps
+
+- [Remote Deployment](/deployment/remote-deployment) - Deploy Sift to a remote server
+- Review `server/app/config.py` for implementation details
+- Check `server/app/services/disaster_agent.py` to understand how variables are used

@@ -1,0 +1,302 @@
+---
+title: 'AI Disaster Discovery Agent'
+description: 'Autonomous AI agent that monitors global data sources and discovers disaster events in real-time'
+icon: 'robot'
+---
+
+## Overview
+
+Sift's AI Disaster Discovery Agent is an autonomous system that continuously monitors multiple global data sources to discover and validate disaster events. Built with OpenAI's function-calling capabilities, it runs on a scheduled interval to fetch, analyze, and save verified disaster alerts.
+
+## How It Works
+
+The agent operates on an autonomous cycle:
+
+1. **Data Collection**: Queries all configured data sources in parallel
+2. **Event Analysis**: Uses AI to evaluate significance and severity
+3. **Deduplication**: Filters out duplicate events within the same geographic area
+4. **Alert Creation**: Saves validated events and broadcasts to connected clients
+
+<Info>
+The agent runs automatically every few minutes (configurable via `AGENT_INTERVAL_MINUTES`) and performs a full scan of all data sources on each run.
+</Info>
+
+## Data Sources
+
+The agent has access to five primary tools for discovering disasters:
+
+### Official APIs (Always Called)
+
+<AccordionGroup>
+  <Accordion title="USGS Earthquakes" icon="earth-americas">
+    Fetches M4.5+ earthquakes from the past hour using USGS GeoJSON feed.
+    
+    **Implementation**: `server/app/services/data_sources.py:21-54`
+    
+    ```python
+    async def fetch_usgs_earthquakes() -> list[dict]:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(USGS_URL, headers=HEADERS)
+            data = resp.json()
+            # Parse GeoJSON features into alert format
+            results.append({
+                "source": "USGS",
+                "type": "earthquake",
+                "magnitude": mag,
+                "lat": coords[1],
+                "lng": coords[0],
+                # ...
+            })
+    ```
+  </Accordion>
+
+  <Accordion title="NOAA Weather Alerts" icon="cloud-bolt">
+    Fetches active Moderate/Severe/Extreme weather alerts for the US (floods, storms, tornadoes, hurricanes).
+    
+    **Implementation**: `server/app/services/data_sources.py:57-96`
+    
+    Filters to only Moderate, Severe, or Extreme severity and calculates centroids from polygon geometries.
+  </Accordion>
+
+  <Accordion title="NASA EONET" icon="satellite">
+    Fetches open natural events globally (wildfires, volcanoes, severe storms) from NASA's Earth Observatory.
+    
+    **Implementation**: `server/app/services/data_sources.py:138-175`
+  </Accordion>
+
+  <Accordion title="GDACS" icon="globe">
+    Fetches Red/Orange level global disaster alerts (earthquakes, floods, cyclones, tsunamis).
+    
+    **Implementation**: `server/app/services/data_sources.py:193-228`
+    
+    Parses RSS feed and filters to Red/Orange alert levels only.
+  </Accordion>
+</AccordionGroup>
+
+### Web Search (Conditional)
+
+<Card title="Tavily Web Search" icon="magnifying-glass">
+  Searches trusted news sources for recent disaster news not covered by official APIs (chemical spills, infrastructure failures, regional events). Limited to 1-2 searches per run.
+  
+  **Whitelisted domains**:
+  - reuters.com, apnews.com, bbc.com
+  - usgs.gov, noaa.gov, gdacs.org, nasa.gov
+  - fema.gov, cdc.gov, who.int
+  - theguardian.com, npr.org
+</Card>
+
+## AI System Prompt
+
+The agent follows a strict procedure on every run:
+
+```python
+def _build_system_prompt() -> str:
+    return f"""You are DisasterAI's autonomous disaster monitoring agent.
+Your job is to find REAL, CURRENT disaster events and save them to our alert database.
+Current UTC time: {now_utc}
+
+PROCEDURE — follow this order every run:
+1. Call fetch_usgs_earthquakes     (always)
+2. Call fetch_noaa_alerts          (always)
+3. Call fetch_nasa_eonet           (always)
+4. Call fetch_gdacs_alerts         (always)
+5. Always call search_web once for recent disaster news
+6. For EACH event that meets SAVE CRITERIA, call save_disaster_alert ONCE
+7. Only AFTER saving all events, output a brief summary.
+"""
+```
+
+**Key file**: `server/app/services/disaster_agent.py:182-214`
+
+## Deduplication Logic
+
+To prevent duplicate alerts, the agent uses geographic proximity checking:
+
+```python
+DEDUP_RADIUS_KM = 50.0  # Only alerts of the same type within this radius are duplicates
+
+def _is_duplicate(self, alert_type: str, lat: float, lng: float, hours: int = 2) -> bool:
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    for alert in storage.get_all_alerts():
+        # Skip if different type or inactive
+        if alert.get("type") != alert_type or not alert.get("active", True):
+            continue
+        # Skip if older than time window
+        created = datetime.fromisoformat(alert["created_at"])
+        if created < since:
+            continue
+        # Check distance using Haversine formula
+        if _distance_km(lat, lng, alert["lat"], alert["lng"]) < DEDUP_RADIUS_KM:
+            return True
+    return False
+```
+
+**Key insight**: Different disaster types (e.g., earthquake vs tsunami) in the same area are both saved, since they may be related but distinct events.
+
+**Implementation**: `server/app/services/disaster_agent.py:479-498`
+
+## Save Criteria
+
+The agent only saves events that meet ALL criteria:
+
+<Steps>
+  <Step title="Real Event">
+    From an official API or confirmed news source
+  </Step>
+  <Step title="Current">
+    Occurred within the last 6 hours
+  </Step>
+  <Step title="Significant">
+    Meets severity threshold (e.g., M4.5+ earthquakes, Severe/Extreme weather)
+  </Step>
+  <Step title="Not Duplicate">
+    No similar event of the same type within 50km in the past 2 hours
+  </Step>
+</Steps>
+
+## Alert Format
+
+When the agent saves an alert, it uses this schema:
+
+```python
+alert = storage.add_alert({
+    "id": str(uuid.uuid4()),
+    "type": alert_type,  # earthquake, flood, fire, storm, chemical, tsunami, medical, infrastructure, other
+    "severity": args.get("severity", "medium"),  # low, medium, high, critical
+    "title": (args.get("title") or "Disaster Alert")[:200],
+    "description": args.get("description"),
+    "city": args.get("city"),
+    "state": args.get("state"),
+    "zipcode": args.get("zipcode"),
+    "lat": lat,
+    "lng": lng,
+    "source": args.get("data_source", "agent"),
+})
+```
+
+**Implementation**: `server/app/services/disaster_agent.py:425-477`
+
+## Real-time Broadcasting
+
+When a new alert is saved, it's immediately broadcast to all connected WebSocket clients:
+
+```python
+if self.ws_manager:
+    asyncio.create_task(
+        self.ws_manager.broadcast({
+            "event": "alert:new",
+            "alert": {
+                "id": alert["id"],
+                "type": alert["type"],
+                "severity": alert["severity"],
+                "title": alert["title"],
+                "lat": alert["lat"],
+                "lng": alert["lng"],
+                # ...
+            },
+        })
+    )
+```
+
+**Implementation**: `server/app/services/disaster_agent.py:452-471`
+
+## Execution Flow
+
+The agent uses an iterative execution loop with a 25-iteration limit:
+
+<CodeGroup>
+```python Agent Loop
+for iteration in range(25):
+    response = client.chat.completions.create(
+        model="Qwen3-30B-A3B",
+        messages=messages,
+        tools=TOOLS,
+        tool_choice="auto",
+        max_tokens=4096,
+        temperature=0.1,
+    )
+    
+    msg = response.choices[0].message
+    
+    # If no tool calls, agent is done
+    if not msg.tool_calls:
+        break
+    
+    # Execute each tool call
+    for tool_call in msg.tool_calls:
+        result = await self._execute_tool(tool_call.function.name, args)
+        # Add result to conversation
+        messages.append({"role": "tool", "content": json.dumps(result)})
+```
+</CodeGroup>
+
+**Implementation**: `server/app/services/disaster_agent.py:271-347`
+
+## Recovery Mechanism
+
+If the agent fetches data but doesn't save any alerts, a recovery prompt is sent:
+
+```python
+if not recovery_prompt_sent and len(agent_status["sources_checked"]) > 0 and alerts_saved == 0:
+    recovery_prompt_sent = True
+    messages.append({
+        "role": "user",
+        "content": (
+            "You have not called save_disaster_alert for any qualifying events. "
+            "Call save_disaster_alert for each event that meets the SAVE CRITERIA now."
+        ),
+    })
+```
+
+**Implementation**: `server/app/services/disaster_agent.py:299-314`
+
+## Scheduling
+
+The agent is scheduled using APScheduler on server startup:
+
+```python
+scheduler = AsyncIOScheduler(timezone="UTC")
+scheduler.add_job(
+    agent.run,
+    trigger="interval",
+    minutes=interval,  # From config: AGENT_INTERVAL_MINUTES
+    next_run_time=datetime.now(timezone.utc),  # Run immediately on startup
+    id="disaster_agent",
+    misfire_grace_time=60,
+)
+scheduler.start()
+```
+
+**Implementation**: `server/app/main.py:73-83`
+
+## Status Monitoring
+
+The agent maintains a global status object:
+
+```python
+agent_status = {
+    "last_run": None,         # ISO timestamp of last run
+    "next_run": None,         # ISO timestamp of next scheduled run
+    "alerts_found": 0,        # Number of alerts saved in last run
+    "sources_checked": [],    # List of data sources queried
+    "running": False,         # Whether agent is currently running
+    "error": None,            # Error message if last run failed
+}
+```
+
+**Implementation**: `server/app/services/disaster_agent.py:40-47`
+
+<Tip>
+You can access the agent status via the `/api/agent/status` endpoint to monitor health and performance.
+</Tip>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Real-time Alerts" icon="bell" href="/features/real-time-alerts">
+    Learn how alerts are delivered via WebSocket
+  </Card>
+  <Card title="Data Sources" icon="database" href="/api-reference/data-sources">
+    Explore all available data sources
+  </Card>
+</CardGroup>

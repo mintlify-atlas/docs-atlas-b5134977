@@ -1,0 +1,120 @@
+---
+title: 'API Overview'
+description: 'Introduction to the Sift REST API and WebSocket connection'
+icon: 'globe'
+---
+
+## Introduction
+
+The Sift API is a disaster alert relay system that provides real-time notifications for natural disasters and emergencies. The API supports both REST endpoints for synchronous operations and WebSocket connections for real-time alert streaming.
+
+## Base URL
+
+The default API base URL is:
+
+```
+https://api.example.com
+```
+
+<Note>
+You should configure your own server URL via the `CENTRAL_SERVER_URL` environment variable or app configuration.
+</Note>
+
+## API Information
+
+- **Title**: DisasterAI API
+- **Version**: 1.0.0
+- **Description**: Disaster alert relay API with BLE mesh support and AI-powered situation reports
+
+## Authentication
+
+The Sift API currently does not require authentication for most endpoints. Device identification is handled through:
+
+1. **Device Registration**: POST to `/api/register` with an optional `deviceId`
+2. **WebSocket Connection**: Include `deviceId` as a query parameter when connecting to `/ws`
+
+## Response Format
+
+All API responses use JSON format with appropriate HTTP status codes:
+
+- **200 OK**: Successful request
+- **400 Bad Request**: Invalid request parameters
+- **404 Not Found**: Resource not found
+- **503 Service Unavailable**: Service temporarily unavailable
+
+### Success Response
+
+```json
+{
+  "status": "ok",
+  "data": { /* response data */ }
+}
+```
+
+### Error Response
+
+```json
+{
+  "detail": "Error description"
+}
+```
+
+## Alert Types
+
+The API supports the following alert types:
+
+<ParamField path="type" type="enum">
+  - `earthquake` - Seismic events
+  - `flood` - Flooding events
+  - `fire` - Fire incidents
+  - `storm` - Storm and cyclone warnings
+  - `chemical` - Chemical hazards
+  - `tsunami` - Tsunami warnings
+  - `medical` - Medical emergencies
+  - `infrastructure` - Infrastructure failures
+  - `other` - Other disaster types
+</ParamField>
+
+## Alert Severity Levels
+
+<ParamField path="severity" type="enum">
+  - `low` - Minor incidents
+  - `medium` - Moderate impact
+  - `high` - Severe situations
+  - `critical` - Life-threatening emergencies
+</ParamField>
+
+## CORS Policy
+
+The API enables CORS for all origins:
+
+```
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: *
+Access-Control-Allow-Headers: *
+```
+
+## Rate Limiting
+
+Currently, there are no explicit rate limits enforced. However, the following limits are recommended:
+
+- Alert queries: Maximum 200 results per request (enforced via `limit` parameter)
+- WebSocket: One connection per device (enforced server-side)
+
+## Client SDKs
+
+The Sift mobile client provides JavaScript services for API interaction:
+
+- **apiService.js**: HTTP client for device registration and alert polling
+- **websocketService.js**: WebSocket client for real-time alert streaming
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="REST Endpoints" icon="server" href="/api/endpoints">
+    Explore all available REST API endpoints
+  </Card>
+  <Card title="WebSocket" icon="bolt" href="/api/websocket">
+    Learn about real-time WebSocket connections
+  </Card>
+</CardGroup>

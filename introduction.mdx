@@ -1,0 +1,247 @@
+---
+title: Introduction
+description: Sift is a disaster alert relay with AI-powered discovery, real-time push, and BLE mesh for offline sharing.
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/hero-light.svg"
+  alt="Hero Light"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/hero-dark.svg"
+  alt="Hero Dark"
+/>
+
+## What is Sift?
+
+Sift is a full-stack disaster management application that aggregates alerts from multiple authoritative sources, enriches them with AI-powered analysis, and delivers them to mobile clients over the internet or via Bluetooth when connectivity is limited.
+
+<CardGroup cols={2}>
+  <Card
+    title="Get Started"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get Sift running locally in minutes with our quickstart guide
+  </Card>
+  <Card
+    title="Architecture"
+    icon="sitemap"
+    href="/architecture"
+  >
+    Learn about the system design and tech stack
+  </Card>
+  <Card
+    title="API Reference"
+    icon="code"
+    href="/api-reference"
+  >
+    Explore the FastAPI backend endpoints
+  </Card>
+  <Card
+    title="Client SDK"
+    icon="mobile"
+    href="/client-sdk"
+  >
+    Build with the React Native client
+  </Card>
+</CardGroup>
+
+## Key Features
+
+### Real-Time Disaster Alerts
+
+Sift aggregates alerts from multiple authoritative sources:
+
+- **USGS** — Earthquakes (M4.5+)
+- **NOAA** — Severe weather alerts (floods, storms, hurricanes)
+- **NASA EONET** — Wildfires, volcanoes, severe storms
+- **GDACS** — Global disaster alerts (Red/Orange level)
+- **Web Search** — Recent disaster news via Tavily
+
+### AI-Powered Discovery Agent
+
+An autonomous agent runs every 20 minutes to:
+
+<Steps>
+  <Step title="Fetch from all sources">
+    Queries USGS, NOAA, NASA EONET, and GDACS APIs for recent events
+  </Step>
+  <Step title="Deduplicate events">
+    Filters out duplicate alerts within 50km of same type
+  </Step>
+  <Step title="Assess severity">
+    Evaluates each event and assigns severity levels (low, medium, high, critical)
+  </Step>
+  <Step title="Save & broadcast">
+    Stores qualifying alerts and pushes them to all connected clients
+  </Step>
+</Steps>
+
+```python
+# From disaster_agent.py - The agent's workflow
+for iteration in range(25):
+    response = client.chat.completions.create(
+        model="Qwen3-30B-A3B",
+        messages=messages,
+        tools=TOOLS,
+        tool_choice="auto",
+        max_tokens=4096,
+        temperature=0.1,
+    )
+    
+    # Agent calls tools: fetch_usgs_earthquakes, fetch_noaa_alerts,
+    # fetch_nasa_eonet, fetch_gdacs_alerts, search_web, save_disaster_alert
+```
+
+### Real-Time Push Notifications
+
+WebSocket connections ensure connected clients receive new alerts instantly:
+
+```javascript
+// From App.js - WebSocket setup
+websocketService.connect(APP_CONFIG.CENTRAL_SERVER_URL, deviceId);
+websocketService.setOnAlert(async (alert) => {
+  await alertService.processAlert(alert, ALERT_SOURCE_SERVER);
+});
+```
+
+### BLE Mesh for Offline Sharing
+
+When internet connectivity is limited or unavailable, Sift devices form a Bluetooth Low Energy mesh network:
+
+- Phones **advertise** as BLE peripherals
+- **Scan** for other Sift devices nearby
+- **Share alerts** over Bluetooth
+- **In-app chat** for peer-to-peer messaging
+
+<Note>
+The BLE mesh is critical for disaster scenarios where cellular networks may be overloaded or down.
+</Note>
+
+```javascript
+// From App.js - BLE mesh initialization
+await blePeripheralService.start(advertiseName, async (data) => {
+  if (data && data._type === 'chat') {
+    await onChatMessage(data);
+    return;
+  }
+  await alertService.processAlert(data, ALERT_SOURCE_BLUETOOTH);
+});
+
+bluetoothService.startScanning((device) => {
+  if (!bluetoothService.isDeviceConnected(device.id)) {
+    bluetoothService.connectToDevice(device);
+  }
+});
+```
+
+### Interactive Map View
+
+Alerts are plotted on an interactive map with:
+
+- Color-coded severity markers
+- Location-based clustering
+- Dark/light theme support
+- Alert details on tap
+
+### In-App Messaging
+
+BLE-based chat system for communication between nearby devices when traditional messaging is unavailable.
+
+## Tech Stack
+
+<CardGroup cols={2}>
+  <Card title="Client" icon="mobile">
+    React Native, BLE (react-native-ble-plx, react-native-multi-ble-peripheral), AsyncStorage
+  </Card>
+  <Card title="Server" icon="server">
+    FastAPI, Uvicorn, WebSockets, APScheduler
+  </Card>
+  <Card title="AI" icon="brain">
+    OpenAI-compatible LLM (Qwen3-30B-A3B), Function calling
+  </Card>
+  <Card title="Data" icon="database">
+    JSON file storage, External APIs (USGS, NOAA, NASA, GDACS, Tavily)
+  </Card>
+</CardGroup>
+
+## Use Cases
+
+<AccordionGroup>
+  <Accordion title="Emergency Response Teams">
+    Real-time disaster alerts aggregated from multiple sources help first responders coordinate faster and more effectively.
+  </Accordion>
+  <Accordion title="Communities in Disaster-Prone Areas">
+    Stay informed about earthquakes, floods, wildfires, and severe weather with alerts from authoritative sources.
+  </Accordion>
+  <Accordion title="Offline/Limited Connectivity Scenarios">
+    BLE mesh ensures critical information spreads even when cellular networks are down or overloaded.
+  </Accordion>
+  <Accordion title="Research & Education">
+    Study disaster patterns and alert distribution with historical data and real-time feeds.
+  </Accordion>
+</AccordionGroup>
+
+## Alert Types & Severity
+
+Sift supports the following alert types:
+
+- **Earthquake** — Seismic events from USGS
+- **Flood** — Flash floods, river flooding
+- **Fire** — Wildfires, chemical fires
+- **Storm** — Severe weather, hurricanes, tornadoes
+- **Chemical** — Industrial accidents, spills
+- **Tsunami** — Ocean-based threats
+- **Medical** — Public health emergencies
+- **Infrastructure** — Bridge collapses, power outages
+- **Other** — Miscellaneous disasters
+
+Each alert is assigned a severity level:
+
+<CardGroup cols={4}>
+  <Card title="Low" icon="circle-info" color="#2ed573">
+    Minor events, advisory
+  </Card>
+  <Card title="Medium" icon="circle-exclamation" color="#ffa502">
+    Moderate impact
+  </Card>
+  <Card title="High" icon="triangle-exclamation" color="#ff6b35">
+    Significant threat
+  </Card>
+  <Card title="Critical" icon="octagon-exclamation" color="#ff4757">
+    Life-threatening
+  </Card>
+</CardGroup>
+
+```javascript
+// From constants.js - Severity configuration
+export const SEVERITY_COLORS = {
+  critical: '#ff4757',
+  high: '#ff6b35',
+  medium: '#ffa502',
+  low: '#2ed573',
+  info: '#4a9eff',
+};
+```
+
+## What's Next?
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart Guide"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get the server and client running locally
+  </Card>
+  <Card
+    title="Configuration"
+    icon="gear"
+    href="/configuration"
+  >
+    Configure server URL, API keys, and more
+  </Card>
+</CardGroup>

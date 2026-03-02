@@ -1,80 +1,432 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get Sift running locally in under 10 minutes
 ---
 
-## Get started in three steps
+## Prerequisites
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+Before you begin, ensure you have the following installed:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Server" icon="server">
+    - Python 3.8+
+    - pip
+  </Card>
+  <Card title="Client" icon="mobile">
+    - Node.js 18+
+    - npm or yarn
+    - Android Studio or Xcode
+  </Card>
 </CardGroup>
 
+<Warning>
+If you're using a system with externally-managed Python (Ubuntu/Debian), you'll need to use a virtual environment (covered below).
+</Warning>
+
+## Project Structure
+
+Understanding the project structure will help you navigate the codebase:
+
+```
+Sift/
+├── Client/                 # React Native app
+│   ├── App.js             # Main app component
+│   ├── src/
+│   │   ├── config/        # Constants, server URL
+│   │   ├── services/      # API, WebSocket, BLE, alerts
+│   │   ├── components/    # UI components (e.g. AlertsMap)
+│   │   └── utils/
+│   └── android/           # Android native project
+├── server/                # FastAPI backend
+│   ├── app/
+│   │   ├── main.py        # App, WebSocket, registration
+│   │   ├── config.py      # Settings & environment vars
+│   │   ├── schemas.py     # Pydantic models
+│   │   ├── routers/       # alerts, users
+│   │   └── services/      # storage, disaster_agent, data_sources
+│   ├── data/              # alerts.json, users.json (created at runtime)
+│   └── requirements.txt
+└── README.md
+```
+
+## Step 1: Set Up the Server
+
+<Steps>
+  <Step title="Navigate to the server directory">
+    ```bash
+    cd server
+    ```
+  </Step>
+  
+  <Step title="Create a virtual environment">
+    This step is required on systems with externally-managed Python (Ubuntu/Debian):
+    
+    ```bash
+    python3 -m venv venv
+    ```
+    
+    <Note>
+    If this fails with an error about `ensurepip`, install the venv package:
+    ```bash
+    sudo apt install -y python3-venv
+    ```
+    Then retry the venv creation command.
+    </Note>
+  </Step>
+  
+  <Step title="Activate the virtual environment">
+    <CodeGroup>
+    ```bash Linux/macOS
+    source venv/bin/activate
+    ```
+    
+    ```bash Windows
+    venv\Scripts\activate
+    ```
+    </CodeGroup>
+  </Step>
+  
+  <Step title="Install dependencies">
+    ```bash
+    pip install -r requirements.txt
+    ```
+    
+    This installs:
+    - **FastAPI** — Web framework
+    - **Uvicorn** — ASGI server
+    - **OpenAI** — LLM client for disaster agent
+    - **APScheduler** — Scheduled agent runs
+    - **Tavily** — Web search for news
+    - **httpx, feedparser** — Data source clients
+  </Step>
+  
+  <Step title="(Optional) Configure environment variables">
+    Create a `.env` file in the `server/` directory:
+    
+    ```bash .env
+    # API keys (optional but recommended)
+    H4H_API_KEY=your-h4h-api-key
+    H4H_BASE_URL=http://165.245.139.104:443/v1
+    TAVILY_API_KEY=your-tavily-api-key
+    
+    # Agent runs every 20 minutes by default
+    AGENT_INTERVAL_MINUTES=20
+    
+    # Server port (default: 8000)
+    PORT=8000
+    ```
+    
+    <Note>
+    The disaster agent will still work without API keys, but will skip web search functionality.
+    </Note>
+  </Step>
+  
+  <Step title="Start the server">
+    ```bash
+    uvicorn app.main:app --reload --port 8000
+    ```
+    
+    You should see output like:
+    
+    ```
+    INFO:     Uvicorn running on http://127.0.0.1:8000
+    INFO:     🚨 DisasterAI backend started — JSON storage ready
+    INFO:     ⏰ Disaster agent scheduler started — runs every 20 min
+    ```
+    
+    <Check>
+    The server is now running! Test it by visiting:
+    ```
+    http://localhost:8000/health
+    ```
+    You should see: `{"status":"ok","version":"1.0.0"}`
+    </Check>
+  </Step>
+</Steps>
+
+### Alternative: Run with Script
+
+The server includes a convenience script:
+
+```bash
+./run.sh
+```
+
+This automatically creates the venv, installs dependencies, and starts the server on port 8000.
+
+## Step 2: Set Up the Client
+
+<Steps>
+  <Step title="Navigate to the client directory">
+    Open a **new terminal** (keep the server running) and:
+    
+    ```bash
+    cd Client
+    ```
+  </Step>
+  
+  <Step title="Install dependencies">
+    ```bash
+    npm install
+    ```
+    
+    This installs:
+    - **React Native** — Mobile framework
+    - **react-native-ble-plx** — BLE central (scanning)
+    - **react-native-multi-ble-peripheral** — BLE peripheral (advertising)
+    - **axios** — HTTP client
+    - **AsyncStorage** — Local storage
+  </Step>
+  
+  <Step title="Configure the server URL">
+    Edit `Client/src/config/constants.js`:
+    
+    ```javascript Client/src/config/constants.js
+    export const APP_CONFIG = {
+      // For local development on physical device, use your machine's IP:
+      CENTRAL_SERVER_URL: 'http://YOUR_MACHINE_IP:8000',
+      // For emulator/simulator, use localhost:
+      // CENTRAL_SERVER_URL: 'http://localhost:8000',  // iOS simulator
+      // CENTRAL_SERVER_URL: 'http://10.0.2.2:8000',   // Android emulator
+      VERSION: '1.0.0',
+      DEBUG_MODE: __DEV__ ?? false,
+    };
+    ```
+    
+    <Warning>
+    If testing on a physical device, you **must** use your computer's LAN IP address (e.g., `http://192.168.1.100:8000`), not `localhost`.
+    
+    To find your IP:
+    <CodeGroup>
+    ```bash macOS/Linux
+    ifconfig | grep "inet "
+    ```
+    ```bash Windows
+    ipconfig
+    ```
+    </CodeGroup>
+    </Warning>
+  </Step>
+  
+  <Step title="Start Metro bundler">
+    ```bash
+    npm start
+    ```
+    
+    Keep this terminal running.
+  </Step>
+  
+  <Step title="Launch the app">
+    Open a **third terminal** and run:
+    
+    <CodeGroup>
+    ```bash Android
+    cd Client
+    npm run android
+    ```
+    
+    ```bash iOS
+    cd Client
+    npm run ios
+    ```
+    </CodeGroup>
+    
+    <Note>
+    - For Android, ensure you have an emulator running or a device connected via USB with USB debugging enabled.
+    - For iOS, you need to be on macOS with Xcode installed.
+    </Note>
+    
+    The app will build and launch. You should see the Sift home screen:
+    
+    - **Header**: Shows connection status (Live/Offline)
+    - **Stats**: Displays alert counts and BLE devices
+    - **Tabs**: Alerts, Map, Network, Messages
+  </Step>
+</Steps>
+
+## Step 3: Verify Everything Works
+
+<Steps>
+  <Step title="Check server connection">
+    In the app, tap the **Network** tab. You should see:
+    
+    - **Server**: Connected (green dot)
+    - **Bluetooth**: Advertising (green dot)
+    
+    If the server shows "Disconnected", verify:
+    1. The server is running (`http://localhost:8000/health` responds)
+    2. The `CENTRAL_SERVER_URL` in `constants.js` is correct
+    3. Your firewall allows connections on port 8000
+  </Step>
+  
+  <Step title="Trigger a test alert">
+    You can create a demo alert to test the system:
+    
+    <CodeGroup>
+    ```bash cURL
+    curl -X POST http://localhost:8000/api/alerts/demo
+    ```
+    
+    ```bash HTTPie
+    http POST http://localhost:8000/api/alerts/demo
+    ```
+    </CodeGroup>
+    
+    The alert should appear in the app within seconds.
+  </Step>
+  
+  <Step title="View alerts on the map">
+    Tap the **Map** tab to see alerts plotted geographically. You can switch between dark and light themes.
+  </Step>
+  
+  <Step title="Test BLE mesh (optional)">
+    If you have two devices:
+    
+    1. Install Sift on both devices
+    2. Ensure Bluetooth is enabled
+    3. On the **Network** tab, you should see each device discover the other
+    4. Send a test ping or chat message
+    
+    <Note>
+    BLE requires physical devices — it won't work in emulators.
+    </Note>
+  </Step>
+</Steps>
+
+## API Endpoints
+
+The server exposes the following endpoints:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/api/register` | POST | Register device (optional `deviceId`) |
+| `/api/alerts` | GET | List alerts (query params: `type`, `severity`, `hours`, `limit`) |
+| `/api/alerts/demo` | POST | Create a random demo alert |
+| `/api/alerts/agent/status` | GET | View disaster agent status |
+| `/api/alerts/agent/run` | POST | Manually trigger agent scan |
+| `/ws` | WebSocket | Real-time alert stream (`?deviceId=...`) |
+
+### Example: Fetch Recent Alerts
+
+<CodeGroup>
+```bash cURL
+curl "http://localhost:8000/api/alerts?hours=24&limit=10"
+```
+
+```javascript JavaScript
+const response = await fetch(
+  'http://localhost:8000/api/alerts?hours=24&limit=10'
+);
+const alerts = await response.json();
+```
+
+```python Python
+import httpx
+
+response = httpx.get(
+    "http://localhost:8000/api/alerts",
+    params={"hours": 24, "limit": 10}
+)
+alerts = response.json()
+```
+</CodeGroup>
+
+### Example: WebSocket Connection
+
+```javascript
+// From websocketService.js
+const ws = new WebSocket(
+  `ws://localhost:8000/ws?deviceId=${deviceId}`
+);
+
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  if (data.event === 'alert:new') {
+    console.log('New alert:', data.alert);
+  }
+};
+```
+
+## Development Tips
+
+<AccordionGroup>
+  <Accordion title="Server not connecting?">
+    1. Check the server logs for errors
+    2. Verify the port isn't in use: `lsof -i :8000` (macOS/Linux) or `netstat -ano | findstr :8000` (Windows)
+    3. Ensure firewall allows connections on port 8000
+    4. If using a physical device, use your LAN IP, not `localhost`
+  </Accordion>
+  
+  <Accordion title="BLE not working?">
+    1. BLE requires physical devices (not emulators)
+    2. Ensure Bluetooth is enabled and permissions granted
+    3. On Android, location permission is required for BLE scanning
+    4. Check the app logs for BLE initialization errors
+  </Accordion>
+  
+  <Accordion title="Agent not running?">
+    1. Check `/api/alerts/agent/status` for agent state
+    2. Manually trigger a run: `curl -X POST http://localhost:8000/api/alerts/agent/run`
+    3. Check server logs for agent execution output
+    4. Verify API keys are set in `.env` if using web search
+  </Accordion>
+  
+  <Accordion title="Hot reload not working?">
+    For the server:
+    ```bash
+    uvicorn app.main:app --reload --port 8000
+    ```
+    
+    For the client:
+    ```bash
+    npm start -- --reset-cache
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Deploy to Production"
+    icon="cloud"
+    href="/deployment"
+  >
+    Deploy the server to a cloud provider and configure the client
+  </Card>
+  <Card
+    title="API Reference"
+    icon="code"
+    href="/api-reference"
+  >
+    Explore all available endpoints and schemas
+  </Card>
+  <Card
+    title="Configuration"
+    icon="gear"
+    href="/configuration"
+  >
+    Configure API keys, agent intervals, and more
+  </Card>
+  <Card
+    title="Architecture"
+    icon="sitemap"
+    href="/architecture"
+  >
+    Deep dive into the system design
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+If you encounter issues:
+
+1. **Check the logs**: Server logs in terminal, client logs in Metro or device console
+2. **Verify versions**: Ensure Python 3.8+, Node 18+
+3. **Clear cache**: For client: `npm start -- --reset-cache`
+4. **Rebuild**: For client: `cd android && ./gradlew clean` (Android) or `cd ios && rm -rf Pods && pod install` (iOS)
+
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+For more help, open an issue on the GitHub repository or check the existing issues for solutions.
 </Note>
